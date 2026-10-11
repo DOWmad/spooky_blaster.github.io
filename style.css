@@ -1,0 +1,42 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.crt {
+  position: relative;
+  line-height: 0;
+  box-shadow: 0 0 40px rgba(80, 120, 255, 0.25);
+}
+
+/* Fit the 3:4 canvas to the viewport while keeping crisp pixels */
+#game {
+  display: block;
+  height: min(96vh, 128vw);
+  aspect-ratio: 3 / 4;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #000;
+}
+
+/* Scanline overlay */
+.crt::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0px,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.25) 3px
+  );
+}
