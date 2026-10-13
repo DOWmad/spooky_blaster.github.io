@@ -4,9 +4,6 @@
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
-  const primaryButton = document.querySelector('.touch-primary');
-  const pauseButton = document.querySelector('.touch-pause');
-  const ultimateButton = document.querySelector('.touch-ultimate');
   const STEP = 1 / 60;
   const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ';
   // Extra lives at widening score milestones, then every 300k; lives cap at MAX_LIVES
@@ -692,14 +689,14 @@
       Theme.toggle();
       Sound.sfx.select();
     }
-    if (Input.wasPressed('Enter', 'Space', 'TouchPrimary')) {
+    if (Input.wasPressed('Enter', 'Space')) {
       Sound.sfx.confirm();
       newGame();
     }
   }
 
   function updatePlaying(dt) {
-    if (Input.wasPressed('KeyP', 'Escape', 'Pause')) G.paused = !G.paused;
+    if (Input.wasPressed('KeyP', 'Escape')) G.paused = !G.paused;
     if (G.paused) return;
 
     G.levelTime += dt;
@@ -760,7 +757,7 @@
     }
 
     const p = G.player;
-    if (p.alive && G.ultCharge >= 100 && Input.wasPressed('KeyE', 'ShiftLeft', 'ShiftRight', 'Ultimate')) activateUltimate();
+    if (p.alive && G.ultCharge >= 100 && Input.wasPressed('KeyE', 'ShiftLeft', 'ShiftRight')) activateUltimate();
     if (G.ultTime > 0) updateUltimate(dt);
     updateGarlic(dt);
     updateLaser(dt);
@@ -893,7 +890,7 @@
   }
 
   function updateGameOver() {
-    if (G.stateTime >= 3 || (G.stateTime > 1 && Input.wasPressed('Enter', 'TouchPrimary'))) {
+    if (G.stateTime >= 3 || (G.stateTime > 1 && Input.wasPressed('Enter'))) {
       if (Leaderboard.qualifies(G.score)) {
         G.name = [0, 0, 0];
         G.namePos = 0;
@@ -931,7 +928,7 @@
   }
 
   function updateLeaderboard() {
-    if (G.stateTime > 0.5 && Input.wasPressed('Enter', 'Space', 'TouchPrimary')) {
+    if (G.stateTime > 0.5 && Input.wasPressed('Enter', 'Space')) {
       Sound.sfx.confirm();
       setState('title');
     }
@@ -1374,29 +1371,6 @@
   let last = performance.now();
   let acc = 0;
 
-  function syncTouchUI() {
-    document.body.classList.toggle('touch-mode', Input.isTouchMode());
-    document.body.dataset.gameState = G.state;
-    if (primaryButton) {
-      const leaderboardReady = G.state === 'leaderboard' && G.stateTime > 0.5;
-      primaryButton.disabled = G.state !== 'title' && !leaderboardReady;
-      const onLeaderboard = G.state === 'leaderboard';
-      primaryButton.textContent = onLeaderboard ? 'TAP TO CONTINUE' : 'TAP TO PLAY';
-      primaryButton.setAttribute('aria-label', onLeaderboard ? 'Continue to title' : 'Start game');
-    }
-    if (pauseButton) {
-      pauseButton.setAttribute('aria-pressed', String(G.paused));
-      pauseButton.setAttribute('aria-label', G.paused ? 'Resume game' : 'Pause game');
-    }
-    if (ultimateButton) {
-      const charge = Math.floor(G.ultCharge);
-      ultimateButton.disabled = G.state !== 'playing' || G.paused || !G.player?.alive || charge < 100;
-      ultimateButton.setAttribute('aria-label', charge >= 100
-        ? 'Use ultimate'
-        : `Ultimate ${charge} percent charged`);
-    }
-  }
-
   // An error must never stop the loop (that looks like a freeze): skip the bad
   // frame, keep going, and show what happened so it can be reported.
   let lastError = null;
@@ -1420,7 +1394,6 @@
       if (advanced) Input.endStep();
     }
     try {
-      syncTouchUI();
       render();
     } catch (err) {
       reportError(err);
