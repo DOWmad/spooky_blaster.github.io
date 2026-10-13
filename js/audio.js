@@ -93,6 +93,7 @@ const Sound = (() => {
     curse: () => { tone(400, 0.6, 'sawtooth', 0.15, 90); tone(600, 0.6, 'square', 0.08, 120); },
     meow: () => { tone(620, 0.12, 'square', 0.12, 880); tone(880, 0.35, 'triangle', 0.15, 480, 0.1); },
     hiss: () => noise(0.3, 0.3, 7000),
+    purr: () => { for (let i = 0; i < 6; i++) tone(55, 0.09, 'sawtooth', 0.25, 45, i * 0.1); },
     raise: () => { tone(110, 0.8, 'sawtooth', 0.15, 220); noise(0.6, 0.2, 600); },
     howl: () => { tone(300, 0.5, 'triangle', 0.2, 620); tone(620, 0.7, 'triangle', 0.2, 280, 0.5); },
     bonus: () => arpeggio([1047, 1319, 1568, 2093, 1568, 2093], 0.05, 'triangle', 0.25),

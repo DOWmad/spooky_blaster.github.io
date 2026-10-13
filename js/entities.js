@@ -339,6 +339,7 @@ class Player {
     this.cool = 0;
     this.secondaryCool = 0;
     this.secondarySide = 1;
+    this.lasing = false;
     this.alive = true;
     if (this.drones) for (const d of this.drones) { d.x = this.x; d.y = H + 20; }
   }
@@ -818,7 +819,7 @@ class Enemy {
         this.burstT = 0.12;
       }
     }
-    if (this.elite && firing && this.type !== 'shooter' && this.type !== 'tank') {
+    if (this.elite && firing && !this.intangible && this.type !== 'shooter' && this.type !== 'tank') {
       this.fireTimer -= dt;
       if (this.fireTimer <= 0) {
         this.fireTimer = rand(1.5, 2.5);
@@ -935,6 +936,7 @@ const POWERUPS = {
   holy:    { label: 'W', name: 'HOLY H2O', color: '#66ccff', weight: 7, theme: 'halloween' },
   silver:  { label: 'Ag', name: 'SILVER', color: '#e8eef8', weight: 7, theme: 'halloween' },
   cross:   { label: 'C', name: 'CROSS',   color: '#ffdd66', weight: 6, theme: 'halloween' },
+  treat:   { label: 'T', name: 'TREAT',   color: '#ff99cc', weight: 8, theme: 'halloween' },
 };
 
 // Power-ups available in the current theme
@@ -986,6 +988,7 @@ class PowerUp {
 
 // Black cat (Halloween): wanders along the player's row being a menace. Crossing
 // under the ship brings bad luck, it steals pickups, and it has nine lives.
+// Carry a treat and it eats that instead, spooking your foes as thanks.
 class BlackCat {
   constructor(game) {
     const from = Math.random() < 0.5 ? -1 : 1;

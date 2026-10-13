@@ -9,6 +9,7 @@
   // Extra lives at widening score milestones, then every 300k; lives cap at MAX_LIVES
   const LIFE_MILESTONES = [50000, 150000, 300000, 500000, 750000, 1000000];
   const MAX_LIVES = 6;
+  const MAX_TREATS = 3;
   const nextLifeAfter = score => LIFE_MILESTONES.find(m => m > score) ?? (Math.floor(score / 300000) + 1) * 300000;
 
   const G = {
@@ -22,7 +23,7 @@
     name: [0, 0, 0], namePos: 0, lastRank: -1,
     ultCharge: 0, ultTime: 0,
     waves: [], hitstop: 0, bonusTimer: 0, bonusCount: 0, victory: false, livesBonus: 0, corpses: [],
-    cat: null, catTimer: 0,
+    cat: null, catTimer: 0, treats: 0, spook: 0,
   };
   window.G = G; // handy for debugging from the console
 
@@ -105,9 +106,24 @@
     Sound.sfx.meow();
   }
 
+  // A fed cat hisses at your foes: enemies and their shots freeze, a boss drops its attack
+  function feedCat(cat) {
+    const p = G.player;
+    G.treats--;
+    G.spook = 5;
+    if (G.boss) Object.assign(G.boss, { queue: [], spiral: null, laser: null, stun: G.spook });
+    G.powerups.push(new PowerUp(cat.x, p.y - 60, randomPowerupKind()));
+    cat.mode = 'flee';
+    explode(cat.x, cat.y, ['#ff99cc', '#ffee33', '#ffffff'], 12, 100);
+    popup('PURR!', cat.x, cat.y - 20, '#ff99cc');
+    popup('SPOOKED!', p.x, p.y - 30, '#ffee33');
+    Sound.sfx.purr();
+  }
+
   function updateCat(dt) {
-    if (!Theme.halloween || (G.phase !== 'waves' && G.phase !== 'boss')) return;
+    if (!Theme.halloween) return;
     if (!G.cat) {
+      if (G.phase !== 'waves' && G.phase !== 'boss') return;
       G.catTimer -= dt;
       if (G.catTimer <= 0) {
         G.cat = new BlackCat(G);
@@ -117,11 +133,12 @@
     }
     const cat = G.cat;
     const p = G.player;
+    if (G.phase === 'bossdying') cat.mode = 'flee';
     cat.update(dt, G);
     // Crossing under the ship is bad luck (once per visit)
     if (cat.mode === 'walk' && !cat.crossed && p.alive && Math.abs(cat.x - p.x) < 12 && Math.abs(cat.y - p.y) < 40) {
       cat.crossed = true;
-      badLuck();
+      if (G.treats > 0) feedCat(cat); else badLuck();
     }
     for (const b of G.playerBullets) {
       if (b.dead || b.pierce || dist2(b, cat) >= (cat.r + b.r) ** 2) continue;
@@ -271,6 +288,7 @@
     G.victory = false;
     G.lastRank = -1;
     G.ultCharge = 0;
+    G.treats = 0;
     G.player = new Player();
     startLevel(1);
     setState('playing');
@@ -298,6 +316,7 @@
     G.corpses = [];
     G.cat = null;
     G.catTimer = rand(15, 35);
+    G.spook = 0;
     G.player.reset();
   }
 
@@ -575,6 +594,7 @@
     G.perfectBonus = G.tookDamage ? 0 : 5000 * G.level;
     addPoints(G.levelBonus + G.perfectBonus);
     G.boss = null;
+    G.cat = null;
     if (G.player.alive) {
       for (const u of G.powerups) if (u.kind !== 'bomb') applyPowerup(u.kind);
     }
@@ -672,6 +692,9 @@
       case 'garlic': p.garlic = 10; break;
       case 'holy': p.holy = 10; break;
       case 'silver': p.silver = 10; break;
+      case 'treat':
+        if (G.treats >= MAX_TREATS) maxed(); else label = `TREAT ${++G.treats}/${MAX_TREATS}`;
+        break;
       case 'bomb': bomb(); break;
       case 'life':
         if (G.lives >= MAX_LIVES) maxed(); else G.lives++;
@@ -778,9 +801,12 @@
       }
     }
 
-    for (const list of [G.playerBullets, G.enemyBullets, G.enemies, G.asteroids, G.powerups]) {
+    G.spook = Math.max(0, G.spook - dt);
+    const spooked = G.spook > 0;
+    for (const list of [G.playerBullets, G.asteroids, G.powerups, ...(spooked ? [] : [G.enemyBullets, G.enemies])]) {
       for (const o of list) o.update(dt, G);
     }
+    if (spooked) for (const e of G.enemies) e.flash = Math.max(0, e.flash - dt);
     if (G.boss && G.phase === 'boss') G.boss.update(dt, G);
 
     collide();
@@ -831,6 +857,7 @@
     if (!p.alive) return;
 
     for (const b of G.enemyBullets) {
+      if (b.dead) continue;
       const blocker = p.drones.find(d => dist2(b, d) < (b.r + d.r) ** 2);
       if (blocker) {
         b.dead = true;
@@ -846,8 +873,9 @@
     }
     for (const e of G.enemies) {
       if (!e.dead && !e.intangible && dist2(e, p) < (e.r * 0.8 + p.r) ** 2) {
+        const exposed = p.invuln <= 0 && G.ultTime <= 0;
         damagePlayer();
-        if (e.hit(3)) killEnemy(e);
+        if (exposed && e.hit(3)) killEnemy(e);
         if (!p.alive) return;
       }
     }
@@ -1146,6 +1174,8 @@
     if (p.garlic > 0) chip(`G${Math.ceil(p.garlic)}`, POWERUPS.garlic.color);
     if (p.holy > 0) chip(`W${Math.ceil(p.holy)}`, POWERUPS.holy.color);
     if (p.silver > 0) chip(`Ag${Math.ceil(p.silver)}`, POWERUPS.silver.color);
+    if (G.treats) chip(`T${G.treats}`, POWERUPS.treat.color);
+    if (G.spook > 0) chip(`SPOOK${Math.ceil(G.spook)}`, '#ffee33');
     if (p.cursed > 0 && blink(4)) chip('CURSED', '#aa33ff');
     if (p.jam > 0 && blink(4)) chip('JAMMED', '#aa33ff');
 
@@ -1252,7 +1282,8 @@
         'SUNLIGHT TURNS TROLLS TO STONE', 'WATER MELTS WITCHES', 'SILVER BULLETS SLAY WEREWOLVES',
         'WEREWOLVES RAGE UNDER THE BLOOD MOON', 'HOLY CROSSES RETURN TO YOUR HAND',
         'SLAY THE NECROMANCER AND HIS DEAD CRUMBLE', 'BEAT BOSSES BEFORE THEY GO BERSERK',
-        'WITCHES CURSE YOU - HOLY WATER PROTECTS', 'NEVER LET A BLACK CAT CROSS YOUR PATH']
+        'WITCHES CURSE YOU - HOLY WATER PROTECTS', 'NEVER LET A BLACK CAT CROSS YOUR PATH',
+        'A TREAT TURNS A BLACK CAT INTO GOOD LUCK']
       : ['MAX POWER KILLS CHARGE THE ULTIMATE', 'LASERS PIERCE EVERYTHING IN THEIR PATH',
         'DESTROY CARRIERS BEFORE THEY REBUILD', 'BEAT BOSSES BEFORE THEY GO BERSERK'];
     text(tips[Math.floor(G.stateTime / 3) % tips.length], W / 2, 500, 8, Theme.halloween ? '#ffcc00' : rainbow(0));
