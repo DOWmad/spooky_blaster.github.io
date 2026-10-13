@@ -1,5 +1,6 @@
 html, body {
   margin: 0;
+  width: 100%;
   height: 100%;
   background: #000;
   overflow: hidden;
@@ -25,6 +26,122 @@ body {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   background: #000;
+  touch-action: none;
+  user-select: none;
+}
+
+.touch-controls {
+  display: none;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.touch-button,
+.touch-name button {
+  min-width: 44px;
+  min-height: 44px;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  color: #fff;
+  background: rgba(14, 17, 40, 0.72);
+  box-shadow: 0 0 12px rgba(51, 255, 255, 0.35);
+  font: 8px "Press Start 2P", monospace;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.touch-button:focus-visible,
+.touch-name button:focus-visible {
+  outline: 3px solid #ffee33;
+  outline-offset: 2px;
+}
+
+body.touch-mode .touch-controls {
+  display: block;
+}
+
+.touch-primary {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: 5%;
+  transform: translateX(-50%);
+  width: max-content;
+  padding: 0 14px;
+  border-color: #33ffff;
+  border-radius: 10px;
+}
+
+.touch-pause {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  border-radius: 10px;
+}
+
+.touch-ultimate {
+  position: absolute;
+  right: 12px;
+  bottom: 18px;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border-color: #ff66dd;
+}
+
+.touch-ultimate:disabled {
+  opacity: 0.38;
+}
+
+.touch-name {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  gap: 6px;
+}
+
+body[data-game-state="entername"] .touch-name {
+  display: flex;
+}
+
+body[data-game-state="title"] .touch-primary,
+body[data-game-state="leaderboard"] .touch-primary {
+  display: block;
+}
+
+body[data-game-state="entername"] .touch-ultimate,
+body:not([data-game-state="playing"]) .touch-pause,
+body:not([data-game-state="playing"]) .touch-ultimate {
+  display: none;
+}
+
+@media (pointer: coarse), (hover: none) {
+  body {
+    box-sizing: border-box;
+    height: 100dvh;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+      env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  .crt {
+    width: min(
+      100%,
+      calc((100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 0.75)
+    );
+    aspect-ratio: 3 / 4;
+  }
+
+  #game {
+    width: 100%;
+    height: 100%;
+  }
+
+  .touch-controls {
+    display: block;
+  }
 }
 
 /* Scanline overlay */

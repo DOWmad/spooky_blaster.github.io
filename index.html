@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Star Blaster</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,11 +12,24 @@
 <body>
   <div class="crt">
     <canvas id="game" width="480" height="640"></canvas>
+    <div class="touch-controls" aria-label="Touch controls">
+      <button class="touch-button touch-primary" data-input-code="TouchPrimary" aria-label="Start game">TAP TO PLAY</button>
+      <button class="touch-button touch-pause" data-input-code="Pause" aria-label="Pause game">Ⅱ</button>
+      <button class="touch-button touch-ultimate" data-input-code="Ultimate" aria-label="Use ultimate">ULT</button>
+      <div class="touch-name" aria-label="Initials controls">
+        <button data-input-code="ArrowUp" aria-label="Previous character">▲</button>
+        <button data-input-code="ArrowLeft" aria-label="Previous position">◀</button>
+        <button data-input-code="Enter" aria-label="Save initials">SAVE</button>
+        <button data-input-code="ArrowRight" aria-label="Next position">▶</button>
+        <button data-input-code="ArrowDown" aria-label="Next character">▼</button>
+      </div>
+    </div>
   </div>
 
   <script src="js/theme.js"></script>
   <script src="js/sprites.js"></script>
   <script src="js/audio.js"></script>
+  <script src="js/input-math.js"></script>
   <script src="js/input.js"></script>
   <script src="js/leaderboard.js"></script>
   <script src="js/entities.js"></script>

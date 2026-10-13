@@ -1,27 +1,129 @@
-// Keyboard state: `down` = currently held, `pressed` = went down since last update step.
-const Input = (() => {
+// Unified keyboard and touch state. `down` is held; `pressed` lasts one update step.
+function createInput({ eventTarget, documentTarget, canvas, initSound }) {
+  const math = typeof module !== 'undefined' && module.exports
+    ? require('./input-math.js')
+    : InputMath;
   const down = new Set();
   const pressed = new Set();
   const BLOCK_DEFAULT = new Set([
     'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Backspace',
   ]);
+  let touchMode = false;
+  let movePointer = null;
+  let touchTarget = null;
 
-  addEventListener('keydown', e => {
-    if (BLOCK_DEFAULT.has(e.code)) e.preventDefault();
-    if (!e.repeat) pressed.add(e.code);
-    down.add(e.code);
-    Sound.init();
+  const clearHeld = () => {
+    down.clear();
+    pressed.clear();
+    movePointer = null;
+    touchTarget = null;
+  };
+
+  const press = code => {
+    if (!down.has(code)) pressed.add(code);
+    down.add(code);
+  };
+
+  const release = code => down.delete(code);
+
+  eventTarget.addEventListener('keydown', event => {
+    if (BLOCK_DEFAULT.has(event.code)) event.preventDefault();
+    if (!event.repeat) pressed.add(event.code);
+    down.add(event.code);
+    initSound();
   });
-  addEventListener('keyup', e => down.delete(e.code));
-  addEventListener('blur', () => down.clear());
+  eventTarget.addEventListener('keyup', event => release(event.code));
+  eventTarget.addEventListener('blur', clearHeld);
+  documentTarget.addEventListener('visibilitychange', () => {
+    if (documentTarget.hidden) clearHeld();
+  });
+
+  const updateTouch = event => {
+    touchTarget = math.clientToCanvas(canvas, event.clientX, event.clientY, 48);
+  };
+
+  canvas.addEventListener('pointerdown', event => {
+    if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
+    event.preventDefault();
+    touchMode = true;
+    initSound();
+    if (movePointer === null) {
+      movePointer = event.pointerId;
+      canvas.setPointerCapture(event.pointerId);
+      updateTouch(event);
+      pressed.add('TouchPrimary');
+    }
+  });
+  canvas.addEventListener('pointermove', event => {
+    if (event.pointerId !== movePointer) return;
+    event.preventDefault();
+    updateTouch(event);
+  });
+  const endPointer = event => {
+    if (event.pointerId === movePointer) {
+      movePointer = null;
+      touchTarget = null;
+    }
+  };
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+
+  for (const button of documentTarget.querySelectorAll('[data-input-code]')) {
+    const code = button.dataset.inputCode;
+    let ignoreNextClick = false;
+    button.addEventListener('pointerdown', event => {
+      if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
+      event.preventDefault();
+      event.stopPropagation();
+      ignoreNextClick = true;
+      touchMode = true;
+      initSound();
+      press(code);
+      button.setPointerCapture(event.pointerId);
+    });
+    const releaseButton = event => {
+      event.preventDefault();
+      release(code);
+    };
+    button.addEventListener('pointerup', releaseButton);
+    button.addEventListener('pointercancel', releaseButton);
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      if (ignoreNextClick) {
+        ignoreNextClick = false;
+        return;
+      }
+      initSound();
+      pressed.add(code);
+    });
+  }
 
   return {
-    isDown: (...codes) => codes.some(c => down.has(c)),
-    wasPressed: (...codes) => codes.some(c => pressed.has(c)),
-    // Letters/digits pressed this step, for initials entry
+    isDown: (...codes) => codes.some(code => down.has(code)),
+    wasPressed: (...codes) => codes.some(code => pressed.has(code)),
+    // Letters/digits pressed this step, for initials entry.
     typedChars: () => [...pressed]
-      .map(c => (c.startsWith('Key') ? c.slice(3) : c.startsWith('Digit') ? c.slice(5) : null))
+      .map(code => code.startsWith('Key')
+        ? code.slice(3)
+        : code.startsWith('Digit') ? code.slice(5) : null)
       .filter(Boolean),
+    touchPosition: () => touchTarget,
+    isTouchMode: () => touchMode,
+    autoFireActive: () => touchMode,
+    virtualPress: code => {
+      initSound();
+      press(code);
+    },
+    virtualRelease: release,
     endStep: () => pressed.clear(),
   };
-})();
+}
+
+const Input = typeof window === 'undefined' ? null : createInput({
+  eventTarget: window,
+  documentTarget: document,
+  canvas: document.getElementById('game'),
+  initSound: () => Sound.init(),
+});
+
+if (typeof module !== 'undefined') module.exports = { createInput };

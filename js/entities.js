@@ -348,11 +348,16 @@ class Player {
   update(dt, game) {
     let dx = 0;
     let dy = 0;
-    if (Input.isDown('ArrowLeft', 'KeyA')) dx -= 1;
-    if (Input.isDown('ArrowRight', 'KeyD')) dx += 1;
-    if (Input.isDown('ArrowUp', 'KeyW')) dy -= 1;
-    if (Input.isDown('ArrowDown', 'KeyS')) dy += 1;
-    if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
+    const touchTarget = Input.touchPosition();
+    if (touchTarget) {
+      ({ dx, dy } = InputMath.directionToTarget(this.x, this.y, touchTarget));
+    } else {
+      if (Input.isDown('ArrowLeft', 'KeyA')) dx -= 1;
+      if (Input.isDown('ArrowRight', 'KeyD')) dx += 1;
+      if (Input.isDown('ArrowUp', 'KeyW')) dy -= 1;
+      if (Input.isDown('ArrowDown', 'KeyS')) dy += 1;
+      if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
+    }
     if (this.cursed > 0) { dx = -dx; dy = -dy; }
     this.cursed = Math.max(0, this.cursed - dt);
     this.jam = Math.max(0, this.jam - dt);
@@ -368,7 +373,7 @@ class Player {
 
     this.cool -= dt;
     this.secondaryCool -= dt;
-    const trigger = Input.isDown('Space') && this.jam <= 0;
+    const trigger = (Input.isDown('Space') || Input.autoFireActive()) && this.jam <= 0;
     this.lasing = trigger && !!this.secondary && this.secondary.kind === 'laser';
     if (trigger) {
       if (this.cool <= 0) {
