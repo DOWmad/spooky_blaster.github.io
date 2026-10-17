@@ -1079,3 +1079,17 @@ test('lower and failed world ranks do not celebrate', async () => {
   t.G.motion.startChampion(null);
   assert.equal(t.G.motion.championTime, 0);
 });
+
+test('a stunned necromancer flickers through the motion policy, so reduced motion slows it', async () => {
+  const t = await boot({ reduceMotion: true });
+  t.play();
+  const nec = new t.Enemy('necromancer', 240, 150);
+  nec.setMode('stunned');
+  nec.stunTime = 5;
+  t.G.enemies.push(nec);
+  const rates = [];
+  const blink = t.G.motion.blink;
+  t.G.motion.blink = (time, rate) => { rates.push(rate); return blink(time, rate); };
+  t.run(0.2);
+  assert.ok(rates.includes(6), `stun flicker asks the motion policy (rates seen: ${[...new Set(rates)]})`);
+});

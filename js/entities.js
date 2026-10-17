@@ -884,7 +884,7 @@ class Enemy {
       ctx.translate(this.x, this.y);
       ctx.rotate(Math.sin(t * 30) * 0.12);
       ctx.translate(-this.x, -this.y);
-      ctx.globalAlpha = alpha * (Math.floor(t * 12) % 2 ? 0.45 : 1);
+      ctx.globalAlpha = alpha * (G.motion.blink(t, 6) ? 1 : 0.45); // slowed by reduced motion
     }
     if (this.raised) {
       ctx.fillStyle = `rgba(100, 255, 120, ${0.15 + Math.sin(t * 6) * 0.08})`;
