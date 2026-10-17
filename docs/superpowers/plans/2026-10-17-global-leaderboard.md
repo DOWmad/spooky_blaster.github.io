@@ -27,7 +27,7 @@
   - request bodies up to 1024 bytes
 - Names match `^[A-Z0-9 ?]{1,3}$` and are not all spaces. **Spec amendment:** `?` is allowed because the game saves blank initials as `???`.
 - Play time is measured server-side: Edge Function time now minus the database's `runs.started_at`. The client never sends a duration. **Spec clarification:** "database clock" in the spec means it is server-measured; mixing the function and database clocks is accepted.
-- Raw IPs are never stored or logged. Only `SHA-256(salt + ip)` hex is stored, with the salt in the function secret `IP_HASH_SALT`.
+- Raw IPs are never stored or logged. Only `SHA-256(salt + ip)` hex is stored, with the salt in the function secret `LEADERBOARD_IP_SALT`.
 - Network failures never block or crash the game. Every client call resolves to `null` on failure.
 - Pinned versions: `@supabase/server` 1.9.2 and `@supabase/supabase-js` 2.120.0 (via `deno.json` imports).
 
@@ -79,7 +79,7 @@ git switch -c feat/global-leaderboard
 openssl rand -hex 32 > /tmp/ip_salt && wc -c /tmp/ip_salt
 ```
 
-Expected: `65 /tmp/ip_salt`. With the owner's permission, set it with `mcp__plugin_supabase_supabase__create_edge_function_secret` (name `IP_HASH_SALT`, value = the file's contents), then `rm /tmp/ip_salt`. If the owner prefers, they paste it into Dashboard → Edge Functions → Secrets themselves.
+Expected: `65 /tmp/ip_salt`. With the owner's permission, set it with `mcp__plugin_supabase_supabase__create_edge_function_secret` (name `LEADERBOARD_IP_SALT`, value = the file's contents), then `rm /tmp/ip_salt`. If the owner prefers, they paste it into Dashboard → Edge Functions → Secrets themselves.
 
 ---
 
@@ -89,7 +89,7 @@ Expected: `65 /tmp/ip_salt`. With the owner's permission, set it with `mcp__plug
 - Create: `supabase/migrations/20261017140000_leaderboard.sql`
 
 **Interfaces:**
-- Produces: `public.runs(token uuid pk, ip_hash text, started_at timestamptz, used_at timestamptz)` and `public.scores(id bigint pk, name text, score int, level int, duration_s int, ip_hash text, created_at timestamptz)`, both readable and writable only by `service_role`.
+- Produces: `public.leaderboard_runs(token uuid pk, ip_hash text, started_at timestamptz, used_at timestamptz)` and `public.leaderboard_scores(id bigint pk, name text, score int, level int, duration_s int, ip_hash text, created_at timestamptz)`, both readable and writable only by `service_role`.
 
 - [ ] **Step 1: Write the migration**
 
@@ -97,16 +97,16 @@ Expected: `65 /tmp/ip_salt`. With the owner's permission, set it with `mcp__plug
 -- Spooky Blaster world leaderboard. Only the `leaderboard` Edge Function (service_role)
 -- touches these tables; anon/authenticated have no privileges and RLS denies by default.
 
-create table public.runs (
+create table public.leaderboard_runs (
   token      uuid primary key default gen_random_uuid(), -- unguessable one-time run token
   ip_hash    text not null,                               -- salted SHA-256, never the raw IP
   started_at timestamptz not null default now(),
   used_at    timestamptz                                  -- set once, when the score is submitted
 );
-create index runs_ip_hash_started_at_idx on public.runs (ip_hash, started_at);
-create index runs_started_at_idx on public.runs (started_at);
+create index leaderboard_runs_ip_hash_started_at_idx on public.leaderboard_runs (ip_hash, started_at);
+create index leaderboard_runs_started_at_idx on public.leaderboard_runs (started_at);
 
-create table public.scores (
+create table public.leaderboard_scores (
   id         bigint generated always as identity primary key,
   name       text not null check (name ~ '^[A-Z0-9 ?]{1,3}$' and btrim(name) <> ''),
   score      integer not null check (score between 1 and 100000000),
@@ -115,17 +115,17 @@ create table public.scores (
   ip_hash    text not null,
   created_at timestamptz not null default now()
 );
-create index scores_score_created_at_idx on public.scores (score desc, created_at);
-create index scores_ip_hash_created_at_idx on public.scores (ip_hash, created_at);
+create index leaderboard_scores_score_created_at_idx on public.leaderboard_scores (score desc, created_at);
+create index leaderboard_scores_ip_hash_created_at_idx on public.leaderboard_scores (ip_hash, created_at);
 
-alter table public.runs enable row level security;
-alter table public.scores enable row level security;
+alter table public.leaderboard_runs enable row level security;
+alter table public.leaderboard_scores enable row level security;
 -- Intentionally no policies: deny-all for anon/authenticated.
 
-revoke all on public.runs, public.scores from anon, authenticated, public;
-grant select, insert, update, delete on public.runs to service_role;
-grant select, insert, delete on public.scores to service_role;
-grant usage on sequence public.scores_id_seq to service_role;
+revoke all on public.leaderboard_runs, public.leaderboard_scores from anon, authenticated, public;
+grant select, insert, update, delete on public.leaderboard_runs to service_role;
+grant select, insert, delete on public.leaderboard_scores to service_role;
+grant usage on sequence public.leaderboard_scores_id_seq to service_role;
 ```
 
 - [ ] **Step 2: Apply it to the new project.** Call `mcp__plugin_supabase_supabase__apply_migration` with name `leaderboard`, the project ref from Task 0, and the file contents. This is a fresh remote project, so a single recorded migration is correct.
@@ -135,14 +135,14 @@ grant usage on sequence public.scores_id_seq to service_role;
 ```sql
 select grantee, table_name, privilege_type
 from information_schema.role_table_grants
-where table_schema = 'public' and table_name in ('runs', 'scores')
+where table_schema = 'public' and table_name in ('leaderboard_runs', 'leaderboard_scores')
 order by grantee, table_name;
 ```
 
 Expected: rows only for `postgres` and `service_role`. **No** `anon`, `authenticated` or `PUBLIC` rows.
 
 ```sql
-select relname, relrowsecurity from pg_class where relname in ('runs', 'scores');
+select relname, relrowsecurity from pg_class where relname in ('leaderboard_runs', 'leaderboard_scores');
 ```
 
 Expected: both `relrowsecurity = true`.
@@ -150,17 +150,17 @@ Expected: both `relrowsecurity = true`.
 - [ ] **Step 4: Verify the constraints reject bad rows** (each in its own call; each must error):
 
 ```sql
-insert into public.scores (name, score, level, duration_s, ip_hash) values ('abc', 10, 1, 5, 'x');
+insert into public.leaderboard_scores (name, score, level, duration_s, ip_hash) values ('abc', 10, 1, 5, 'x');
 ```
-Expected: `violates check constraint "scores_name_check"`.
+Expected: `violates check constraint "leaderboard_scores_name_check"`.
 ```sql
-insert into public.scores (name, score, level, duration_s, ip_hash) values ('   ', 10, 1, 5, 'x');
+insert into public.leaderboard_scores (name, score, level, duration_s, ip_hash) values ('   ', 10, 1, 5, 'x');
 ```
-Expected: `scores_name_check` violation.
+Expected: `leaderboard_scores_name_check` violation.
 ```sql
-insert into public.scores (name, score, level, duration_s, ip_hash) values ('ABC', 0, 1, 5, 'x');
+insert into public.leaderboard_scores (name, score, level, duration_s, ip_hash) values ('ABC', 0, 1, 5, 'x');
 ```
-Expected: `scores_score_check` violation.
+Expected: `leaderboard_scores_score_check` violation.
 
 - [ ] **Step 5: Verify the REST API refuses the publishable key.**
 
@@ -427,7 +427,7 @@ import {
   LIMITS, clientIp, corsHeaders, ipHash, parseStart, parseSubmission, plausible, route,
 } from './rules.mjs';
 
-const SALT = Deno.env.get('IP_HASH_SALT') ?? '';
+const SALT = Deno.env.get('LEADERBOARD_IP_SALT') ?? '';
 const TOO_BIG = Symbol('too big');
 
 const json = (status: number, data: unknown, extra: Record<string, string> = {}) =>
@@ -452,7 +452,7 @@ const api = withSupabase({ auth: 'publishable', cors: 'disabled' }, async (req, 
   if (action === 'bad_method') return json(405, { error: 'method_not_allowed' });
 
   if (action === 'top') {
-    const { data, error } = await db.from('scores')
+    const { data, error } = await db.from('leaderboard_scores')
       .select('name, score, level, created_at')
       .order('score', { ascending: false })
       .order('created_at', { ascending: true })
@@ -470,14 +470,14 @@ const api = withSupabase({ auth: 'publishable', cors: 'disabled' }, async (req, 
 
   if (action === 'start') {
     if (!parseStart(body)) return rejected();
-    const { count, error: countError } = await db.from('runs')
+    const { count, error: countError } = await db.from('leaderboard_runs')
       .select('token', { count: 'exact', head: true })
       .eq('ip_hash', hash).gte('started_at', since(60 * 60 * 1000));
     if (countError) throw countError;
     if ((count ?? 0) >= LIMITS.startsPerHour * budget) return json(429, { error: 'rate_limited' });
-    const { error: purgeError } = await db.from('runs').delete().lt('started_at', since(24 * 60 * 60 * 1000));
+    const { error: purgeError } = await db.from('leaderboard_runs').delete().lt('started_at', since(24 * 60 * 60 * 1000));
     if (purgeError) throw purgeError;
-    const { data, error } = await db.from('runs').insert({ ip_hash: hash }).select('token').single();
+    const { data, error } = await db.from('leaderboard_runs').insert({ ip_hash: hash }).select('token').single();
     if (error) throw error;
     return json(200, { token: data.token });
   }
@@ -485,14 +485,14 @@ const api = withSupabase({ auth: 'publishable', cors: 'disabled' }, async (req, 
   // submit
   const sub = parseSubmission(body);
   if (!sub) return rejected();
-  const { count, error: countError } = await db.from('scores')
+  const { count, error: countError } = await db.from('leaderboard_scores')
     .select('id', { count: 'exact', head: true })
     .eq('ip_hash', hash).gte('created_at', since(60 * 60 * 1000));
   if (countError) throw countError;
   if ((count ?? 0) >= LIMITS.submitsPerHour * budget) return json(429, { error: 'rate_limited' });
 
   // Consume the token atomically: only an unused, unexpired token matches.
-  const { data: run, error: runError } = await db.from('runs')
+  const { data: run, error: runError } = await db.from('leaderboard_runs')
     .update({ used_at: new Date().toISOString() })
     .eq('token', sub.token).is('used_at', null).gte('started_at', since(LIMITS.tokenMaxAgeMs))
     .select('started_at').maybeSingle();
@@ -505,11 +505,11 @@ const api = withSupabase({ auth: 'publishable', cors: 'disabled' }, async (req, 
     return rejected();
   }
 
-  const { error: insertError } = await db.from('scores').insert({
+  const { error: insertError } = await db.from('leaderboard_scores').insert({
     name: sub.name, score: sub.score, level: sub.level, duration_s: durationS, ip_hash: hash,
   });
   if (insertError) throw insertError;
-  const { count: better, error: rankError } = await db.from('scores')
+  const { count: better, error: rankError } = await db.from('leaderboard_scores')
     .select('id', { count: 'exact', head: true }).gt('score', sub.score);
   if (rankError) throw rankError;
   return json(200, { rank: (better ?? 0) + 1 });
@@ -567,7 +567,7 @@ git commit -m "feat(leaderboard): add Edge Function for top, start and submit"
 ```bash
 #!/usr/bin/env bash
 # Live checks for the deployed leaderboard function. Writes test rows named 'ZZT';
-# clean up afterwards with: delete from public.scores where name = 'ZZT';
+# clean up afterwards with: delete from public.leaderboard_scores where name = 'ZZT';
 # Usage: URL=https://<ref>.supabase.co/functions/v1/leaderboard KEY=sb_publishable_... scripts/leaderboard-smoke.sh
 set -u
 : "${URL:?set URL}" "${KEY:?set KEY}"
@@ -616,14 +616,14 @@ echo "$fails failure(s)"; exit $fails
 Run: `chmod +x scripts/leaderboard-smoke.sh && URL=... KEY=... scripts/leaderboard-smoke.sh`
 Expected: every line `ok`, ending `0 failure(s)`.
 
-- [ ] **Step 3: Verify the client IP can't be spoofed.** Note the newest `ip_hash` in `runs` after the smoke run (`select ip_hash from public.runs order by started_at desc limit 1;` with `execute_sql`). Wait for the hourly window to clear (or clear the test runs with `delete from public.runs where started_at > now() - interval '1 hour';`), then:
+- [ ] **Step 3: Verify the client IP can't be spoofed.** Note the newest `ip_hash` in `runs` after the smoke run (`select ip_hash from public.leaderboard_runs order by started_at desc limit 1;` with `execute_sql`). Wait for the hourly window to clear (or clear the test runs with `delete from public.leaderboard_runs where started_at > now() - interval '1 hour';`), then:
 
 ```bash
 curl -s "$URL/start" -H "apikey: $KEY" -H "content-type: application/json" -H "x-forwarded-for: 198.51.100.7" -d '{}'
 curl -s "$URL/start" -H "apikey: $KEY" -H "content-type: application/json" -H "x-forwarded-for: 198.51.100.8" -d '{}'
 ```
 
-Then run `select ip_hash from public.runs order by started_at desc limit 3;`.
+Then run `select ip_hash from public.leaderboard_runs order by started_at desc limit 3;`.
 Expected: all three hashes are **identical** (the spoofed values were ignored). If they differ, `clientIp` is reading a caller-controlled entry. Then:
   - Look for a platform-set header instead: repeat with `-H "cf-connecting-ip: 198.51.100.7"`. If that one is not overridable either, change `clientIp` to read it (test first in `tests/leaderboard-rules.test.js`).
   - If neither header is trustworthy, make `clientIp` return `null`. Every caller then shares the `unknownIpFactor` budget, which is the spec's fallback.
@@ -634,8 +634,8 @@ Expected: all three hashes are **identical** (the spoofed values were ignored). 
 - [ ] **Step 5: Clean up the test rows**
 
 ```sql
-delete from public.scores where name = 'ZZT';
-delete from public.runs where started_at > now() - interval '1 day';
+delete from public.leaderboard_scores where name = 'ZZT';
+delete from public.leaderboard_runs where started_at > now() - interval '1 day';
 ```
 
 - [ ] **Step 6: Commit**
@@ -1152,6 +1152,6 @@ git commit -m "feat(leaderboard): show world top 10 and submit runs from the gam
 
 - [ ] **Step 2: Offline check.** Use Playwright to block `*.supabase.co`, reload, and wait 10 seconds. The title table must say **HIGH SCORES (OFFLINE)**, and a full game plus initials save must work, ending with `NOT SUBMITTED - SAVED ON THIS DEVICE`.
 
-- [ ] **Step 3: Clean up.** Run `delete from public.scores where name = 'ZZT';` with `execute_sql`, stop the server, close the browser, and remove `.playwright-mcp/`.
+- [ ] **Step 3: Clean up.** Run `delete from public.leaderboard_scores where name = 'ZZT';` with `execute_sql`, stop the server, close the browser, and remove `.playwright-mcp/`.
 
 - [ ] **Step 4: Final checks.** Run `node --test` (all pass), then `get_advisors` security and performance (only the documented INFO items). Then hand off with superpowers:finishing-a-development-branch.

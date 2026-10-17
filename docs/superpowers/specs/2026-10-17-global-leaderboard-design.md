@@ -13,7 +13,7 @@ Add a public world top-10 leaderboard to Spooky Blaster (served from GitHub Page
 |---|---|
 | Audience | Public, casual: plausibility checks plus easy moderation |
 | Backend | Supabase |
-| Project | A **new dedicated Supabase project**. The org is on the free plan with both active slots in use (HashtagWild, scrabble), so before setup the owner must either pause one of those or upgrade. Nothing is paused without the owner naming which. |
+| Project | **Shared with the existing `scrabble` project** (ref `vmqppvmrjyntfiixhhim`, eu-west-2). The free plan's 2 active projects are both in use, so the owner chose to share rather than pause one. All leaderboard objects are prefixed `leaderboard_` (tables, indexes, the `LEADERBOARD_IP_SALT` secret) and the function is named `leaderboard`, so nothing collides with scrabble's `games`, `push_subscriptions` or `notify`. |
 | Write path | **Edge Function**, not an anonymous `SECURITY DEFINER` RPC. Changed from the first proposal after checking Supabase guidance (see Security). |
 
 ## Architecture
@@ -26,7 +26,7 @@ js/leaderboard.js  --fetch, apikey: sb_publishable_...-->  Edge Function `leader
                                                              | withSupabase({ auth: 'publishable' })
                                                              | validates, rate-limits
                                                              v  (secret key, server-side only)
-                                                           public.runs, public.scores
+                                                           public.leaderboard_runs, public.leaderboard_scores
                                                              RLS on, no anon/authenticated grants
 ```
 
@@ -52,16 +52,16 @@ js/leaderboard.js  --fetch, apikey: sb_publishable_...-->  Edge Function `leader
 Both tables live in `public` but are **not exposed to the Data API**: since the 2026-04-28 platform change, new tables aren't exposed by default, and this design additionally revokes all privileges from `anon` and `authenticated` explicitly and grants only what the Edge Function's `service_role` needs.
 
 ```sql
-create table public.runs (
+create table public.leaderboard_runs (
   token      uuid primary key default gen_random_uuid(), -- unguessable one-time token
   ip_hash    text not null,                               -- salted SHA-256, never the raw IP
   started_at timestamptz not null default now(),
   used_at    timestamptz                                  -- set once, when the score is submitted
 );
-create index runs_ip_hash_started_at_idx on public.runs (ip_hash, started_at);
-create index runs_started_at_idx on public.runs (started_at);
+create index leaderboard_runs_ip_hash_started_at_idx on public.leaderboard_runs (ip_hash, started_at);
+create index leaderboard_runs_started_at_idx on public.leaderboard_runs (started_at);
 
-create table public.scores (
+create table public.leaderboard_scores (
   id         bigint generated always as identity primary key,
   name       text not null check (name ~ '^[A-Z0-9 ]{1,3}$' and btrim(name) <> ''),
   score      integer not null check (score between 1 and 100000000),
@@ -70,16 +70,16 @@ create table public.scores (
   ip_hash    text not null,
   created_at timestamptz not null default now()
 );
-create index scores_score_created_at_idx on public.scores (score desc, created_at);
-create index scores_ip_hash_created_at_idx on public.scores (ip_hash, created_at);
+create index leaderboard_scores_score_created_at_idx on public.leaderboard_scores (score desc, created_at);
+create index leaderboard_scores_ip_hash_created_at_idx on public.leaderboard_scores (ip_hash, created_at);
 
-alter table public.runs enable row level security;
-alter table public.scores enable row level security;
+alter table public.leaderboard_runs enable row level security;
+alter table public.leaderboard_scores enable row level security;
 -- No policies: deny-all for anon/authenticated (defense in depth on top of the revokes).
 
-revoke all on public.runs, public.scores from anon, authenticated, public;
-grant select, insert, update, delete on public.runs to service_role;
-grant select, insert, delete on public.scores to service_role;
+revoke all on public.leaderboard_runs, public.leaderboard_scores from anon, authenticated, public;
+grant select, insert, update, delete on public.leaderboard_runs to service_role;
+grant select, insert, delete on public.leaderboard_scores to service_role;
 ```
 
 Notes:
@@ -96,7 +96,7 @@ Notes:
    - `score <= 5000 * duration_s` (points per second)
    - `duration_s >= 20 * (level - 1)` (no level clears faster than about 20 s)
 4. **Input validation.** `name` is 1 to 3 characters from `A-Z`, `0-9` and space, not all spaces. `score` and `level` are integers within the table limits. Anything else gets 400.
-5. **Rate limits, per salted IP hash.** Up to 30 `start` calls and 10 accepted submissions per hour. Over the limit gets 429. The hash uses SHA-256 with a secret salt stored as the Edge Function secret `IP_HASH_SALT`. Raw IPs are never stored or logged. Which request header carries the real client IP on Supabase Edge Functions will be confirmed against current docs during implementation; if no trustworthy header exists, the rate limit falls back to a global per-minute cap.
+5. **Rate limits, per salted IP hash.** Up to 30 `start` calls and 10 accepted submissions per hour. Over the limit gets 429. The hash uses SHA-256 with a secret salt stored as the Edge Function secret `LEADERBOARD_IP_SALT`. Raw IPs are never stored or logged. Which request header carries the real client IP on Supabase Edge Functions will be confirmed against current docs during implementation; if no trustworthy header exists, the rate limit falls back to a global per-minute cap.
 6. **Housekeeping.** `start` also deletes runs older than 24 hours (an indexed range delete), so no cron extension is needed.
 7. **Moderation.** The owner deletes bad rows in the Supabase dashboard's Table Editor (`scores`). No admin endpoint.
 
@@ -146,7 +146,7 @@ All network code lives in `js/leaderboard.js`, next to the existing local leader
 
 1. Free a free-plan slot (pause a named project) or upgrade, then approve creating the `spooky-blaster` project, in a region near the owner (e.g. eu-west-2).
 2. Confirm the project's new publishable/secret API keys exist (create the default pair if the dashboard offers it).
-3. Set the `IP_HASH_SALT` function secret (Claude can generate a random value; the owner pastes it into the dashboard or allows Claude to set it).
+3. Set the `LEADERBOARD_IP_SALT` function secret (Claude can generate a random value; the owner pastes it into the dashboard or allows Claude to set it).
 
 ## Out of scope
 
