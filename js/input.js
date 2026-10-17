@@ -14,6 +14,7 @@ const Input = (() => {
   let taps = [];
   let dragId = null;
   let last = null;
+  const activeTouches = new Map();
   const drag = { x: 0, y: 0 };
 
   // Screen pixels -> game pixels (the canvas is CSS-scaled)
@@ -36,22 +37,27 @@ const Input = (() => {
     touchMode = true;
     Sound.init();
     const p = toGame(e);
+    activeTouches.set(e.pointerId, p);
     taps.push({ ...p, id: e.pointerId });
     if (dragId === null) { dragId = e.pointerId; last = p; }
   });
   addEventListener('pointermove', e => {
-    if (e.pointerId !== dragId) return;
     const p = toGame(e);
+    if (activeTouches.has(e.pointerId)) activeTouches.set(e.pointerId, p);
+    if (e.pointerId !== dragId) return;
     drag.x += p.x - last.x;
     drag.y += p.y - last.y;
     last = p;
   });
-  const lift = e => { if (e.pointerId === dragId) dragId = null; };
+  const lift = e => {
+    activeTouches.delete(e.pointerId);
+    if (e.pointerId === dragId) dragId = null;
+  };
   addEventListener('pointerup', lift);
   addEventListener('pointercancel', lift);
 
   // Losing focus must not leave keys held or a finger "stuck" dragging
-  addEventListener('blur', () => { down.clear(); dragId = null; });
+  addEventListener('blur', () => { down.clear(); activeTouches.clear(); dragId = null; });
 
   return {
     isDown: (...codes) => codes.some(c => down.has(c)),
@@ -63,6 +69,8 @@ const Input = (() => {
     get touch() { return touchMode; },
     taps: () => taps,
     drag: () => drag,
+    isTouching: (x, y, r) => [...activeTouches.values()]
+      .some(p => Math.hypot(p.x - x, p.y - y) < r),
     // A tap that hit a button shouldn't also steer the ship
     release: id => {
       if (id !== dragId) return;

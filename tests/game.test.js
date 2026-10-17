@@ -14,18 +14,38 @@ const blob = new Proxy(function () {}, { get: () => blob, apply: () => blob, set
 
 // Boots a fresh Halloween game sitting on the title screen. `phone` fakes a touchscreen;
 // `fetch` stands in for the network (default: offline).
-async function boot({ phone = false, fetch = () => Promise.reject(new Error('offline')) } = {}) {
+async function boot({ phone = false, reduceMotion = false, fetch = () => Promise.reject(new Error('offline')) } = {}) {
   const listeners = {};
   const errors = [];
   let raf = null;
   let now = 0;
+  const media = new Map();
+  const mediaQuery = query => {
+    if (!media.has(query)) {
+      const changes = new Set();
+      const mql = {
+        media: query,
+        matches: query === '(pointer: coarse)' ? phone
+          : query === '(prefers-reduced-motion: reduce)' ? reduceMotion
+            : false,
+        addEventListener: (type, fn) => { if (type === 'change') changes.add(fn); },
+        removeEventListener: (type, fn) => { if (type === 'change') changes.delete(fn); },
+        setMatches(matches) {
+          this.matches = matches;
+          for (const fn of changes) fn({ matches, media: query });
+        },
+      };
+      media.set(query, mql);
+    }
+    return media.get(query);
+  };
   const canvas = () => ({ width: 0, height: 0, getContext: () => blob });
   // The game canvas is 480x640, shown at half size on screen
   const gameCanvas = { width: 480, height: 640, getContext: () => blob,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 240, height: 320 }) };
   const sandbox = {
     document: { getElementById: () => gameCanvas, createElement: canvas },
-    matchMedia: q => ({ matches: phone && q === '(pointer: coarse)' }),
+    matchMedia: mediaQuery,
     localStorage: { getItem: k => (k === 'starblaster.theme' ? 'halloween' : null), setItem() {} },
     addEventListener: (type, fn) => (listeners[type] ||= []).push(fn),
     requestAnimationFrame: fn => { raf = fn; },
@@ -68,7 +88,7 @@ async function boot({ phone = false, fetch = () => Promise.reject(new Error('off
   const Input = vm.runInContext('Input', sandbox);
   // Let pending network promises settle
   const flush = () => new Promise(r => setImmediate(r));
-  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, flush, context: sandbox };
+  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, flush, mediaQuery, context: sandbox };
 }
 
 // A fake leaderboard server: routes by the last path segment and records each request
@@ -611,4 +631,207 @@ test('world requests bypass the browser cache, so a fresh score shows up straigh
   await world.startRun();
   await world.submit('t', 'ABC', 10, 1);
   assert.deepEqual([...server.calls.map(c => c.cache)], ['no-store', 'no-store', 'no-store']);
+});
+
+// ---------- animation accessibility and polish ----------
+
+test('motion policy caps flashes and follows reduced motion live', async () => {
+  const t = await boot();
+  assert.equal(t.G.motion.flashAlpha(1), 0.6);
+  t.mediaQuery('(prefers-reduced-motion: reduce)').setMatches(true);
+  assert.equal(t.G.motion.reduce, true);
+  assert.equal(t.G.motion.flashAlpha(1), 0.25);
+});
+
+test('reduced motion removes shake and limits requested blink rates', async () => {
+  const t = await boot({ reduceMotion: true });
+  t.play();
+  t.G.shake = 15;
+  t.run(1 / 60);
+  assert.deepEqual([t.G.motion.shakeX, t.G.motion.shakeY], [0, 0]);
+  assert.equal(t.G.motion.blinkRate(8), 3);
+  assert.equal(t.G.motion.blinkRate(2), 2);
+});
+
+test('shake offsets change on game ticks and not extra renders', async () => {
+  const t = await boot();
+  t.play();
+  t.G.shake = 15;
+  t.run(1 / 60);
+  const first = [t.G.motion.shakeX, t.G.motion.shakeY];
+  vm.runInContext('debugRender()', t.context);
+  vm.runInContext('debugRender()', t.context);
+  assert.deepEqual([t.G.motion.shakeX, t.G.motion.shakeY], first);
+  t.run(1 / 60);
+  assert.notDeepEqual([t.G.motion.shakeX, t.G.motion.shakeY], first);
+});
+
+test('level clear ignores early input and skips after the score appears', async () => {
+  const t = await boot();
+  t.play();
+  Object.assign(t.G, { state: 'levelclear', stateTime: 2.3, level: 1 });
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  assert.equal(t.G.state, 'levelclear');
+  t.key('keyup', 'Enter');
+  t.run(0.2);
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  assert.equal(t.G.state, 'playing');
+  assert.equal(t.G.level, 2);
+});
+
+test('victory ignores early taps and skips after the score appears', async () => {
+  const t = await boot({ phone: true });
+  t.play();
+  Object.assign(t.G, { state: 'victory', stateTime: 2.9, victory: true, level: 10 });
+  t.tap(240, 400);
+  t.run(1 / 60);
+  assert.equal(t.G.state, 'victory');
+  t.run(0.2);
+  t.tap(240, 400);
+  t.run(1 / 60);
+  assert.equal(t.G.state, 'playing');
+  assert.equal(t.G.level, 11);
+});
+
+test('boss entrance eases to its target over two seconds', async () => {
+  const t = await boot();
+  t.play();
+  const boss = new t.Boss(1);
+  const startY = boss.y;
+  boss.update(1, t.G);
+  assert.ok(boss.y > startY + (boss.targetY - startY) * 0.5, 'ease-out covers most distance early');
+  assert.equal(boss.state, 'enter');
+  boss.update(1, t.G);
+  assert.equal(boss.y, boss.targetY);
+  assert.equal(boss.state, 'fight');
+});
+
+test('boss sway ramps from zero after entering', async () => {
+  const t = await boot();
+  t.play();
+  const boss = new t.Boss(1);
+  boss.update(2, t.G);
+  const x0 = boss.x;
+  boss.update(0.1, t.G);
+  assert.ok(boss.swayMix > 0 && boss.swayMix < 1);
+  assert.ok(Math.abs(boss.x - x0) < 20, 'sway begins gently');
+  boss.update(0.5, t.G);
+  assert.equal(boss.swayMix, 1);
+});
+
+test('touch controls expose held press feedback and clear it on release', async () => {
+  const t = await boot({ phone: true });
+  playByTouch(t);
+  t.finger('pointerdown', 480 - 46, 640 - 112, 9);
+  assert.equal(t.Input.isTouching(480 - 46, 640 - 112, 30), true);
+  t.finger('pointerup', 480 - 46, 640 - 112, 9);
+  assert.equal(t.Input.isTouching(480 - 46, 640 - 112, 30), false);
+});
+
+test('pointer cancellation clears touch-control feedback', async () => {
+  const t = await boot({ phone: true });
+  playByTouch(t);
+  t.finger('pointerdown', 480 - 26, 104, 7);
+  assert.equal(t.Input.isTouching(480 - 26, 104, 20), true);
+  t.finger('pointercancel', 480 - 26, 104, 7);
+  assert.equal(t.Input.isTouching(480 - 26, 104, 20), false);
+});
+
+test('boss health trail catches down over 0.4 seconds', async () => {
+  const t = await boot();
+  t.play();
+  const boss = new t.Boss(1);
+  Object.assign(boss, { state: 'fight', y: boss.targetY });
+  Object.assign(t.G, { boss, phase: 'boss' });
+  t.run(1 / 60);
+  boss.hp = boss.maxHp / 2;
+  t.run(0.2);
+  assert.ok(t.G.motion.bossHpTrail > boss.hp && t.G.motion.bossHpTrail < boss.maxHp);
+  t.run(0.25);
+  assert.equal(t.G.motion.bossHpTrail, boss.hp);
+});
+
+test('boss health trail snaps upward for healing and boss replacement', async () => {
+  const t = await boot();
+  t.play();
+  const first = new t.Boss(1);
+  Object.assign(first, { state: 'fight', hp: first.maxHp / 2 });
+  Object.assign(t.G, { boss: first, phase: 'boss' });
+  t.run(1 / 60);
+  first.hp = first.maxHp;
+  t.run(1 / 60);
+  assert.equal(t.G.motion.bossHpTrail, first.maxHp);
+  const second = new t.Boss(2);
+  Object.assign(t.G, { boss: second, phase: 'boss' });
+  t.run(0.05);
+  assert.equal(t.G.motion.bossHpOwner, second);
+  assert.equal(t.G.motion.bossHpTrail, second.hp);
+});
+
+test('level banner fades over 0.2 seconds at each edge', async () => {
+  const t = await boot();
+  assert.equal(t.G.motion.bannerAlpha(2.5), 0);
+  assert.ok(Math.abs(t.G.motion.bannerAlpha(2.4) - 0.5) < 1e-9);
+  assert.equal(t.G.motion.bannerAlpha(1.25), 1);
+  assert.equal(t.G.motion.bannerAlpha(0.1), 0.5);
+  assert.equal(t.G.motion.bannerAlpha(0), 0);
+});
+
+test('title and table crossfade over 0.2 seconds', async () => {
+  const t = await boot();
+  const midpoint = t.G.motion.titleAlphas(8.9);
+  assert.ok(Math.abs(midpoint.title - 0.5) < 1e-9);
+  assert.ok(Math.abs(midpoint.table - 0.5) < 1e-9);
+  assert.deepEqual({ ...t.G.motion.titleAlphas(9) }, { title: 0, table: 1 });
+  const secondMidpoint = t.G.motion.titleAlphas(17.9);
+  assert.ok(Math.abs(secondMidpoint.title - 0.5) < 1e-9);
+  assert.ok(Math.abs(secondMidpoint.table - 0.5) < 1e-9);
+  assert.deepEqual({ ...t.G.motion.titleAlphas(18) }, { title: 1, table: 0 });
+});
+
+test('world rank one starts one champion burst without blocking continue', async () => {
+  const server = fakeServer({ top: [200, WORLD], start: [200, { token: 'champ' }], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch });
+  reachInitials(t);
+  await t.flush();
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  await t.flush();
+  assert.equal(t.G.worldRank, 1);
+  assert.ok(t.G.motion.championTime > 0);
+  assert.equal(t.G.motion.championEmitted, false);
+  t.run(0.05);
+  assert.equal(t.G.motion.championEmitted, true);
+  const emittedWaves = t.G.waves.length;
+  t.run(0.2);
+  assert.equal(t.G.waves.length, emittedWaves, 'shockwave is not emitted again');
+  t.key('keyup', 'Enter');
+  t.run(0.6);
+  t.key('keydown', 'Enter');
+  t.run(0.05);
+  assert.equal(t.G.state, 'title');
+});
+
+test('reduced motion shows static world rank one without a burst', async () => {
+  const server = fakeServer({ top: [200, WORLD], start: [200, { token: 'champ' }], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch, reduceMotion: true });
+  reachInitials(t);
+  await t.flush();
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  await t.flush();
+  assert.equal(t.G.motion.championTime, Infinity);
+  assert.equal(t.G.motion.championEmitted, true);
+  assert.equal(t.G.particles.length, 0);
+  assert.equal(t.G.waves.length, 0);
+});
+
+test('lower and failed world ranks do not celebrate', async () => {
+  const t = await boot();
+  t.G.motion.startChampion(2);
+  assert.equal(t.G.motion.championTime, 0);
+  t.G.motion.startChampion(null);
+  assert.equal(t.G.motion.championTime, 0);
 });

@@ -667,7 +667,7 @@ class Enemy {
           this.y += this.speed * 1.5 * dt;
           if (this.y >= this.stopY * 0.6) this.setMode('aim');
         } else if (this.mode === 'aim') {
-          this.flash = Math.floor(this.modeT * 12) % 2 ? 0.02 : 0;
+          this.flash = game.motion.blink(this.modeT, 6) ? 0.02 : 0;
           if (this.modeT > 0.6) {
             const a = game.angleTo(this.x, this.y);
             const s = 380 * this.speedMul;
@@ -702,7 +702,7 @@ class Enemy {
         // Halloween witches also cast spells, flashing as they wind up
         if (Theme.halloween && this.x > 30 && this.x < W - 30) {
           this.spellT -= dt;
-          if (this.spellT < 0.3) this.flash = Math.floor(this.spellT * 20) % 2 ? 0.02 : 0;
+          if (this.spellT < 0.3) this.flash = game.motion.blink(this.spellT, 10) ? 0.02 : 0;
           if (this.spellT <= 0) {
             this.spellT = rand(1.6, 2.4) / this.fireMul;
             game.castSpell(this);
@@ -713,7 +713,7 @@ class Enemy {
       case 'mine':
         // Blinks faster as the fuse runs down, then bursts into a ring
         this.y += this.speed * dt;
-        if (this.t > 2.2) this.flash = Math.floor(this.t * 14) % 2 ? 0.02 : 0;
+        if (this.t > 2.2) this.flash = game.motion.blink(this.t, 7) ? 0.02 : 0;
         if (this.t > 3.2 || this.y > H - 110) {
           game.ring(this.x, this.y, 8, 130);
           game.explode(this.x, this.y, ['#ff3344', '#ffee33', '#ffffff'], 10, 100);
@@ -1074,6 +1074,10 @@ class Boss {
     this.y = -this.h;
     this.targetY = final ? 150 : 140;
     this.state = 'enter';
+    this.enterFromY = this.y;
+    this.enterTime = 0;
+    this.enterDuration = 2;
+    this.swayMix = 0;
     this.t = 0;
     this.moveT = 0;     // movement clock - pauses while holding still so the boss never snaps
     this.speedMul = 1 + 0.06 * (level - 1);
@@ -1121,7 +1125,7 @@ class Boss {
     const e = k * k * (3 - 2 * k);
     this.x = lp.fx + (lp.tx - lp.fx) * e;
     this.y = lp.fy + (lp.ty - lp.fy) * e;
-    if (lp.stage === 'crouch') this.flash = Math.floor(lp.t * 12) % 2 ? 0.02 : 0;
+    if (lp.stage === 'crouch') this.flash = game.motion.blink(lp.t, 6) ? 0.02 : 0;
     if (k < 1) return;
     if (lp.stage === 'crouch') {
       const p = game.player;
@@ -1151,10 +1155,15 @@ class Boss {
     this.t += dt;
     this.flash = Math.max(0, this.flash - dt);
     if (this.state === 'enter') {
-      this.y += 60 * dt;
-      if (this.y >= this.targetY) { this.y = this.targetY; this.state = 'fight'; }
+      this.enterTime = Math.min(this.enterDuration, this.enterTime + dt);
+      const k = this.enterTime / this.enterDuration;
+      const eased = 1 - (1 - k) ** 3;
+      this.y = this.enterFromY + (this.targetY - this.enterFromY) * eased;
+      if (k >= 1) { this.y = this.targetY; this.state = 'fight'; }
       return;
     }
+
+    this.swayMix = Math.min(1, this.swayMix + dt / 0.6);
 
     // Phase change (HP thresholds)
     const frac = this.hp / this.maxHp;
@@ -1174,13 +1183,13 @@ class Boss {
     else if (!this.laser) {
       this.moveT += dt;
       const range = W / 2 - this.w / 2 - 10;
-      this.x = W / 2 + Math.sin(this.moveT * 0.7 * this.speedMul) * range;
-      this.y = this.targetY + Math.sin(this.moveT * 1.3) * 15;
+      this.x = W / 2 + Math.sin(this.moveT * 0.7 * this.speedMul) * range * this.swayMix;
+      this.y = this.targetY + Math.sin(this.moveT * 1.3) * 15 * this.swayMix;
     }
 
     if (this.stun > 0) {
       this.stun -= dt;
-      this.flash = Math.floor(this.stun * 12) % 2 ? 0.02 : 0;
+      this.flash = game.motion.blink(this.stun, 6) ? 0.02 : 0;
       return;
     }
 
