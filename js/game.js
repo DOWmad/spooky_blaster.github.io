@@ -11,6 +11,42 @@
   const MAX_LIVES = 6;
   const MAX_TREATS = 3;
   const nextLifeAfter = score => LIFE_MILESTONES.find(m => m > score) ?? (Math.floor(score / 300000) + 1) * 300000;
+  const reduceMotionQuery = window.matchMedia
+    ? window.matchMedia('(prefers-reduced-motion: reduce)')
+    : { matches: false, addEventListener() {} };
+  const motion = {
+    reduce: reduceMotionQuery.matches,
+    shakeX: 0,
+    shakeY: 0,
+    bossHpOwner: null,
+    bossHpTrail: 0,
+    bossHpFrom: 0,
+    bossHpTarget: 0,
+    bossHpTime: 0,
+    championTime: 0,
+    championEmitted: false,
+    flashAlpha: value => Math.min(value, motion.reduce ? 0.25 : 0.6),
+    blinkRate: rate => Math.min(rate, motion.reduce ? 3 : rate),
+    blink: (time, rate = 2) => Math.floor(time * motion.blinkRate(rate) * 2) % 2 === 0,
+    bannerAlpha: remaining => Math.max(0, Math.min(1, remaining / 0.2, (2.5 - remaining) / 0.2)),
+    titleAlphas: time => {
+      const cycle = ((time % 18) + 18) % 18;
+      if (cycle < 8.8) return { title: 1, table: 0 };
+      if (cycle < 9) {
+        const table = (cycle - 8.8) / 0.2;
+        return { title: 1 - table, table };
+      }
+      if (cycle < 17.8) return { title: 0, table: 1 };
+      const title = (cycle - 17.8) / 0.2;
+      return { title, table: 1 - title };
+    },
+    startChampion(rank) {
+      if (rank !== 1) return;
+      motion.championTime = motion.reduce ? Infinity : 0.8;
+      motion.championEmitted = motion.reduce;
+    },
+  };
+  reduceMotionQuery.addEventListener('change', event => { motion.reduce = event.matches; });
 
   const G = {
     state: 'title', stateTime: 0, t: 0,
@@ -24,8 +60,11 @@
     ultCharge: 0, ultTime: 0,
     waves: [], hitstop: 0, bonusTimer: 0, bonusCount: 0, victory: false, livesBonus: 0, corpses: [],
     cat: null, catTimer: 0, treats: 0, spook: 0,
+    runId: 0, runToken: null, worldRank: null,
+    motion,
   };
   window.G = G; // handy for debugging from the console
+  window.debugRender = () => render();
 
   // ---------- spawning helpers (also called by entities) ----------
 
@@ -292,6 +331,14 @@
     G.lastRank = -1;
     G.ultCharge = 0;
     G.treats = 0;
+    // Ask the world leaderboard for a run token in the background; a late reply is
+    // ignored if another game has started since
+    const run = ++G.runId;
+    G.runToken = null;
+    G.worldRank = null;
+    G.motion.championTime = 0;
+    G.motion.championEmitted = false;
+    Leaderboard.world.startRun().then(token => { if (G.runId === run) G.runToken = token; });
     G.player = new Player();
     startLevel(1);
     setState('playing');
@@ -738,11 +785,12 @@
   // Generous hit circles: fingers are bigger than the drawn buttons
   const tapOn = b => Input.taps().find(t => Math.hypot(t.x - b.x, t.y - b.y) < b.r + 10);
   // The title screen alternates with the high-score table every 9 seconds
-  const titleShowsTable = () => Math.floor(G.stateTime / 9) % 2 === 1;
+  const titleShowsTable = () => G.motion.titleAlphas(G.stateTime).table >= 0.5;
 
   // ---------- per-state updates ----------
 
   function updateTitle() {
+    Leaderboard.world.refresh();
     const themeTap = !titleShowsTable() && Input.taps().find(t => Math.abs(t.y - THEME_LINE_Y) < 14);
     if (Input.wasPressed('KeyT') || themeTap) {
       Theme.toggle();
@@ -939,8 +987,10 @@
     }
   }
 
+  const resultAdvancePressed = () => Input.wasPressed('Enter', 'Space') || tapped();
+
   function updateLevelClear() {
-    if (G.stateTime >= 4.5) {
+    if (G.stateTime >= 4.5 || (G.stateTime >= 2.4 && resultAdvancePressed())) {
       G.level++;
       startLevel(G.level);
       setState('playing');
@@ -948,7 +998,7 @@
   }
 
   function updateVictory() {
-    if (G.stateTime >= 9) {
+    if (G.stateTime >= 9 || (G.stateTime >= 3 && resultAdvancePressed())) {
       G.victory = false;
       G.level++;
       startLevel(G.level);
@@ -958,7 +1008,7 @@
 
   function updateGameOver() {
     if (G.stateTime >= 3 || (G.stateTime > 1 && (Input.wasPressed('Enter') || tapped()))) {
-      if (Leaderboard.qualifies(G.score)) {
+      if (Leaderboard.qualifies(G.score) || Leaderboard.world.qualifies(G.score)) {
         G.name = [0, 0, 0];
         G.namePos = 0;
         setState('entername');
@@ -1000,12 +1050,29 @@
     if (Input.wasPressed('Enter') || tapOn(SAVE_BTN)) {
       const name = G.name.map(i => CHARS[i]).join('').trim() || '???';
       G.lastRank = Leaderboard.add(name, G.score, G.level);
+      submitWorld(name);
       Sound.sfx.confirm();
       setState('leaderboard');
     }
   }
 
+  // Send the finished run to the world board; the leaderboard screen shows the outcome
+  function submitWorld(name) {
+    const token = G.runToken;
+    G.runToken = null; // a token is good for one submission
+    if (!token) { G.worldRank = 'failed'; return; }
+    const run = G.runId;
+    G.worldRank = 'pending';
+    Leaderboard.world.submit(token, name, G.score, G.level).then(rank => {
+      if (G.runId !== run) return;
+      G.worldRank = rank ?? 'failed';
+      G.motion.startChampion(rank);
+      if (rank) Leaderboard.world.refresh(true);
+    });
+  }
+
   function updateLeaderboard() {
+    Leaderboard.world.refresh();
     if (G.stateTime > 0.5 && (Input.wasPressed('Enter', 'Space') || tapped())) {
       Sound.sfx.confirm();
       setState('title');
@@ -1036,6 +1103,55 @@
     G.flash = Math.max(0, G.flash - dt * 2);
   }
 
+  function updateShakeOffset() {
+    if (G.motion.reduce || (G.state === 'playing' && G.paused) || G.shake <= 0) {
+      G.motion.shakeX = 0;
+      G.motion.shakeY = 0;
+    } else {
+      G.motion.shakeX = rand(-G.shake, G.shake);
+      G.motion.shakeY = rand(-G.shake, G.shake);
+    }
+  }
+
+  function updateBossHealthTrail(dt) {
+    const boss = G.boss;
+    if (!boss || G.phase !== 'boss') {
+      G.motion.bossHpOwner = null;
+      G.motion.bossHpTrail = 0;
+      G.motion.bossHpFrom = 0;
+      G.motion.bossHpTarget = 0;
+      G.motion.bossHpTime = 0;
+      return;
+    }
+    if (G.motion.bossHpOwner !== boss || boss.hp > G.motion.bossHpTarget) {
+      G.motion.bossHpOwner = boss;
+      G.motion.bossHpTrail = boss.hp;
+      G.motion.bossHpFrom = boss.hp;
+      G.motion.bossHpTarget = boss.hp;
+      G.motion.bossHpTime = 0;
+      return;
+    }
+    if (boss.hp < G.motion.bossHpTarget) {
+      G.motion.bossHpFrom = G.motion.bossHpTrail;
+      G.motion.bossHpTarget = boss.hp;
+      G.motion.bossHpTime = 0;
+    }
+    G.motion.bossHpTime = Math.min(0.4, G.motion.bossHpTime + dt);
+    const k = G.motion.bossHpTime / 0.4;
+    G.motion.bossHpTrail = G.motion.bossHpFrom
+      + (G.motion.bossHpTarget - G.motion.bossHpFrom) * k;
+  }
+
+  function updateChampion(dt) {
+    if (!G.motion.championTime || G.motion.championTime === Infinity) return;
+    if (!G.motion.championEmitted) {
+      G.motion.championEmitted = true;
+      shockwave(W / 2, H - 90, 150, '#ffee33', 0.45, 4);
+      explode(W / 2, H - 90, ['#ffee33', '#ff44dd', '#33ffff'], 24, 180);
+    }
+    G.motion.championTime = Math.max(0, G.motion.championTime - dt);
+  }
+
   function update(dt) {
     G.t += dt;
     // Brief freeze-frame on big impacts. Returns false so key presses carry over.
@@ -1050,6 +1166,8 @@
     }
     updateStars(dt);
     if (!(G.state === 'playing' && G.paused)) updateEffects(dt);
+    updateBossHealthTrail(dt);
+    if (G.state === 'leaderboard') updateChampion(dt);
     switch (G.state) {
       case 'title': updateTitle(); break;
       case 'playing': updatePlaying(dt); break;
@@ -1059,6 +1177,7 @@
       case 'entername': updateEnterName(); break;
       case 'leaderboard': updateLeaderboard(); break;
     }
+    updateShakeOffset();
     Sound.music(currentTrack());
   }
 
@@ -1095,7 +1214,7 @@
       diver: 'VAMPIRE', splitter: 'SPIDER', minelayer: 'WITCH', phantom: 'GHOST',
       necromancer: 'NECROMANCER' },
   };
-  const blink = (rate = 2) => Math.floor(G.t * rate * 2) % 2 === 0;
+  const blink = (rate = 2) => G.motion.blink(G.t, rate);
   const rainbow = offset => `hsl(${(G.t * 120 + offset) % 360}, 100%, 60%)`;
 
   function drawWorld() {
@@ -1249,6 +1368,8 @@
       text(Theme.halloween ? b.def.hname : b.def.name, W / 2, 62, 8, '#ff44dd');
       ctx.fillStyle = '#331122';
       ctx.fillRect(40, 72, W - 80, 8);
+      ctx.fillStyle = '#ff9933';
+      ctx.fillRect(40, 72, (W - 80) * Math.max(0, G.motion.bossHpTrail / b.maxHp), 8);
       ctx.fillStyle = b.berserk ? (blink(8) ? '#ff0000' : '#ffffff') : b.raging ? (blink(4) ? '#ff3344' : '#ff9933') : '#ff44dd';
       ctx.fillRect(40, 72, (W - 80) * Math.max(0, b.hp / b.maxHp), 8);
       ctx.strokeStyle = '#ffffff';
@@ -1270,35 +1391,47 @@
     }
   }
 
-  function drawButton(b, color, alpha) {
+  function drawButton(b, color, alpha, pressed = false, drawContent = () => {}) {
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    if (pressed) ctx.scale(0.95, 0.95);
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.fillStyle = pressed ? 'rgba(255, 255, 255, 0.22)' : 'rgba(0, 0, 0, 0.35)';
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = pressed ? 3 : 2;
     ctx.beginPath();
-    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.arc(0, 0, b.r, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+    ctx.globalAlpha = 1;
+    drawContent();
+    ctx.restore();
   }
 
   function drawTouchButtons(ultReady) {
-    drawButton(PAUSE_BTN, '#ffffff', 0.5);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(PAUSE_BTN.x - 6, PAUSE_BTN.y - 7, 4, 14);
-    ctx.fillRect(PAUSE_BTN.x + 2, PAUSE_BTN.y - 7, 4, 14);
-    drawButton(ULT_BTN, ultReady ? rainbow(0) : '#666666', ultReady ? 0.9 : 0.4);
-    ctx.globalAlpha = ultReady ? 1 : 0.4;
-    text('ULT', ULT_BTN.x + 1, ULT_BTN.y + 1, 10, ultReady ? '#ffffff' : '#888888');
-    ctx.globalAlpha = 1;
+    const pausePressed = Input.isTouching(PAUSE_BTN.x, PAUSE_BTN.y, PAUSE_BTN.r + 10);
+    const ultPressed = ultReady && Input.isTouching(ULT_BTN.x, ULT_BTN.y, ULT_BTN.r + 10);
+    drawButton(PAUSE_BTN, '#ffffff', pausePressed ? 0.75 : 0.5, pausePressed, () => {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(-6, -7, 4, 14);
+      ctx.fillRect(2, -7, 4, 14);
+    });
+    drawButton(ULT_BTN, ultReady ? rainbow(0) : '#666666', ultReady ? (ultPressed ? 1 : 0.9) : 0.4, ultPressed, () => {
+      ctx.globalAlpha = ultReady ? 1 : 0.4;
+      text('ULT', 1, 1, 10, ultReady ? '#ffffff' : '#888888');
+    });
   }
 
   function drawPlayingOverlays() {
     if (G.bannerTime > 0) {
+      ctx.save();
+      ctx.globalAlpha = G.motion.bannerAlpha(G.bannerTime);
       const loop = loopOf(G.level);
       text(isFinalLevel(G.level) ? 'FINAL LEVEL' : `LEVEL ${G.level}`, W / 2, H / 2 - 20, 24, rainbow(0));
       if (loop > 0) text(`LOOP ${loop + 1}`, W / 2, H / 2 - 56, 10, '#ff3344');
       text(Backgrounds.name(currentScene()), W / 2, H / 2 + 46, 10, Theme.c.label);
       if (blink(3)) text('GET READY', W / 2, H / 2 + 16, 12, '#ffffff');
+      ctx.restore();
     }
     if (G.phase === 'warning') {
       ctx.fillStyle = `rgba(255, 0, 40, ${0.15 + Math.sin(G.phaseTime * 8) * 0.1})`;
@@ -1314,15 +1447,9 @@
     }
   }
 
-  function drawTitle() {
-    const play = Input.touch ? 'TAP TO PLAY' : 'PRESS ENTER TO PLAY';
-    if (titleShowsTable()) {
-      drawLeaderboardTable('HIGH SCORES');
-      if (blink(1.5)) text(play, W / 2, H - 50, 12, '#ffffff');
-      return;
-    }
+  function drawTitleCard() {
     if (Theme.halloween) {
-      const flicker = Math.random() < 0.05 ? '#ffffff' : '#ff9933';
+      const flicker = !G.motion.reduce && Math.random() < 0.05 ? '#ffffff' : '#ff9933';
       text('SPOOKY', W / 2, 90, 40, flicker);
       text('BLASTER', W / 2, 140, 40, '#9944ee');
     } else {
@@ -1372,20 +1499,47 @@
       text('E ULTIMATE P PAUSE M MUTE N MUSIC', W / 2, 542, 8, '#aaaaaa');
       text(`T THEME: ${themeName}`, W / 2, THEME_LINE_Y, 8, themeColor);
     }
+  }
+
+  function drawTitle() {
+    const alphas = G.motion.titleAlphas(G.stateTime);
+    if (alphas.title > 0) {
+      ctx.save();
+      ctx.globalAlpha = alphas.title;
+      drawTitleCard();
+      ctx.restore();
+    }
+    if (alphas.table > 0) {
+      ctx.save();
+      ctx.globalAlpha = alphas.table;
+      drawBestTable(false);
+      ctx.restore();
+    }
+    const play = Input.touch ? 'TAP TO PLAY' : 'PRESS ENTER TO PLAY';
     if (blink(1.5)) text(play, W / 2, 594, 12, '#ffffff');
   }
 
-  function drawLeaderboardTable(title) {
+  // World top 10 when we have it; otherwise the local table, marked offline
+  function drawBestTable(highlightLocal) {
+    const world = Leaderboard.world.top;
+    if (world) {
+      const r = G.worldRank;
+      drawLeaderboardTable('WORLD TOP 10', world, typeof r === 'number' && r <= 10 ? r - 1 : -1);
+    } else {
+      drawLeaderboardTable('HIGH SCORES (OFFLINE)', Leaderboard.all(), highlightLocal ? G.lastRank : -1);
+    }
+  }
+
+  function drawLeaderboardTable(title, list, highlightIdx) {
     text(title, W / 2, 80, 20, rainbow(0));
     text('RANK', 60, 130, 10, Theme.c.label, 'left');
     text('NAME', 160, 130, 10, Theme.c.label, 'left');
     text('SCORE', 340, 130, 10, Theme.c.label, 'right');
     text('LV', 420, 130, 10, Theme.c.label, 'right');
-    const list = Leaderboard.all();
     for (let i = 0; i < 10; i++) {
       const y = 166 + i * 34;
       const e = list[i];
-      const highlight = i === G.lastRank;
+      const highlight = i === highlightIdx;
       const color = highlight ? (blink(4) ? '#ffee33' : '#ff9933') : i < 3 ? '#33ffff' : '#ffffff';
       text(`${i + 1}`.padStart(2, ' '), 60, y, 12, color, 'left');
       if (e) {
@@ -1405,13 +1559,13 @@
     drawStars();
 
     ctx.save();
-    if (G.shake > 0) ctx.translate(rand(-G.shake, G.shake), rand(-G.shake, G.shake));
+    if (G.motion.shakeX || G.motion.shakeY) ctx.translate(G.motion.shakeX, G.motion.shakeY);
     if (inGame()) drawWorld();
     drawEffects();
     ctx.restore();
 
     if (G.flash > 0) {
-      ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(1, G.flash)})`;
+      ctx.fillStyle = `rgba(255, 255, 255, ${G.motion.flashAlpha(G.flash)})`;
       ctx.fillRect(0, 0, W, H);
     }
 
@@ -1481,7 +1635,18 @@
         break;
       }
       case 'leaderboard':
-        drawLeaderboardTable('HIGH SCORES');
+        drawBestTable(true);
+        if (G.worldRank === 'pending') text('SUBMITTING...', W / 2, H - 90, 10, '#aaaaaa');
+        else if (G.worldRank === 'failed') text('NOT SUBMITTED - SAVED ON THIS DEVICE', W / 2, H - 90, 8, '#ff9933');
+        else if (G.worldRank === 1) {
+          ctx.strokeStyle = '#ffee33';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(105.5, H - 121.5, 269, 52);
+          text('YOU REACHED', W / 2, H - 106, 8, '#33ffff');
+          text('WORLD #1', W / 2, H - 86, 16, '#ffee33');
+        } else if (typeof G.worldRank === 'number') {
+          text(`WORLD RANK #${G.worldRank}`, W / 2, H - 90, 12, '#ffee33');
+        }
         if (blink(1.5)) text(Input.touch ? 'TAP TO CONTINUE' : 'PRESS ENTER', W / 2, H - 50, 12, '#ffffff');
         break;
     }

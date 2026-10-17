@@ -12,19 +12,40 @@ const FRAME_MS = 1000 / 60;
 // Stands in for a canvas context: every property is callable and returns itself
 const blob = new Proxy(function () {}, { get: () => blob, apply: () => blob, set: () => true });
 
-// Boots a fresh Halloween game sitting on the title screen. `phone` fakes a touchscreen.
-async function boot({ phone = false } = {}) {
+// Boots a fresh Halloween game sitting on the title screen. `phone` fakes a touchscreen;
+// `fetch` stands in for the network (default: offline).
+async function boot({ phone = false, reduceMotion = false, fetch = () => Promise.reject(new Error('offline')) } = {}) {
   const listeners = {};
   const errors = [];
   let raf = null;
   let now = 0;
+  const media = new Map();
+  const mediaQuery = query => {
+    if (!media.has(query)) {
+      const changes = new Set();
+      const mql = {
+        media: query,
+        matches: query === '(pointer: coarse)' ? phone
+          : query === '(prefers-reduced-motion: reduce)' ? reduceMotion
+            : false,
+        addEventListener: (type, fn) => { if (type === 'change') changes.add(fn); },
+        removeEventListener: (type, fn) => { if (type === 'change') changes.delete(fn); },
+        setMatches(matches) {
+          this.matches = matches;
+          for (const fn of changes) fn({ matches, media: query });
+        },
+      };
+      media.set(query, mql);
+    }
+    return media.get(query);
+  };
   const canvas = () => ({ width: 0, height: 0, getContext: () => blob });
   // The game canvas is 480x640, shown at half size on screen
   const gameCanvas = { width: 480, height: 640, getContext: () => blob,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 240, height: 320 }) };
   const sandbox = {
     document: { getElementById: () => gameCanvas, createElement: canvas },
-    matchMedia: q => ({ matches: phone && q === '(pointer: coarse)' }),
+    matchMedia: mediaQuery,
     localStorage: { getItem: k => (k === 'starblaster.theme' ? 'halloween' : null), setItem() {} },
     addEventListener: (type, fn) => (listeners[type] ||= []).push(fn),
     requestAnimationFrame: fn => { raf = fn; },
@@ -32,6 +53,7 @@ async function boot({ phone = false } = {}) {
     console: { ...console, error: (...a) => errors.push(a.join(' ')) },
     setTimeout,
     setInterval() {}, // music scheduler - nothing to play here
+    fetch, AbortController, clearTimeout,
   };
   sandbox.window = sandbox;
   vm.createContext(sandbox);
@@ -64,7 +86,23 @@ async function boot({ phone = false } = {}) {
     return (game.G.cat = cat);
   };
   const Input = vm.runInContext('Input', sandbox);
-  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, context: sandbox };
+  // Let pending network promises settle
+  const flush = () => new Promise(r => setImmediate(r));
+  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, flush, mediaQuery, context: sandbox };
+}
+
+// A fake leaderboard server: routes by the last path segment and records each request
+function fakeServer(routes) {
+  const calls = [];
+  const fetch = async (url, opts = {}) => {
+    const action = url.split('/').pop();
+    calls.push({ action, method: opts.method || 'GET', headers: opts.headers || {}, cache: opts.cache, body: opts.body ? JSON.parse(opts.body) : undefined });
+    const reply = routes[action];
+    if (!reply) return { ok: false, status: 404, json: async () => ({}) };
+    const [status, data] = typeof reply === 'function' ? reply(calls[calls.length - 1]) : reply;
+    return { ok: status >= 200 && status < 300, status, json: async () => data };
+  };
+  return { fetch, calls };
 }
 
 test('boots to the title screen and starts a game without errors', async () => {
@@ -418,4 +456,382 @@ test('pressing a key switches back to keyboard mode', async () => {
   const t = await boot({ phone: true });
   t.key('keydown', 'ArrowLeft');
   assert.equal(t.Input.touch, false);
+});
+
+// ---------- world leaderboard client ----------
+
+const WORLD = [
+  { name: 'ACE', score: 90000, level: 7, at: '2026-10-17T10:00:00Z' },
+  { name: 'BOB', score: 50000, level: 5, at: '2026-10-17T11:00:00Z' },
+];
+
+test('the world top 10 is fetched with the publishable key and feeds the HI score', async () => {
+  const server = fakeServer({ top: [200, WORLD] });
+  const t = await boot({ fetch: server.fetch });
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  await world.refresh(true);
+  assert.equal(world.top.length, 2);
+  assert.equal(world.top[0].name, 'ACE');
+  assert.match(server.calls[0].headers.apikey, /^sb_publishable_/);
+  assert.equal(server.calls[0].headers.Authorization, undefined, 'never a bearer token');
+  assert.equal(vm.runInContext('Leaderboard.hiScore()', t.context), 90000);
+});
+
+test('offline: no world table, and the local HI score still works', async () => {
+  const t = await boot();
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  assert.equal(await world.refresh(true), null);
+  assert.equal(world.top, null);
+  assert.equal(vm.runInContext('Leaderboard.hiScore()', t.context), 30000);
+});
+
+test('malformed world data is filtered, never trusted', async () => {
+  const junk = [
+    { name: 'OK', score: 100, level: 1 },
+    { name: 123, score: 5 }, { name: 'X', score: 'lots' }, null,
+    { name: 'A'.repeat(50), score: 10, level: 1 },
+  ];
+  for (const reply of [[200, junk], [200, { not: 'an array' }], [500, {}]]) {
+    const t = await boot({ fetch: fakeServer({ top: reply }).fetch });
+    const world = vm.runInContext('Leaderboard.world', t.context);
+    await world.refresh(true);
+    const top = world.top;
+    assert.ok(top === null || top.every(e => typeof e.name === 'string' && e.name.length <= 3 && Number.isFinite(e.score)));
+    t.run(10); // the title screen alternates to the table; drawing it must not throw
+    assert.deepEqual(t.errors, []);
+  }
+});
+
+test('refresh is throttled to once a minute unless forced', async () => {
+  const server = fakeServer({ top: [200, WORLD] });
+  const t = await boot({ fetch: server.fetch });
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  await world.refresh();
+  await world.refresh();
+  assert.equal(server.calls.length, 1);
+  await world.refresh(true);
+  assert.equal(server.calls.length, 2);
+});
+
+test('startRun and submit speak the server protocol', async () => {
+  const server = fakeServer({ start: [200, { token: 'tok-1' }], submit: [200, { rank: 3 }] });
+  const t = await boot({ fetch: server.fetch });
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  assert.equal(await world.startRun(), 'tok-1');
+  assert.equal(await world.submit('tok-1', 'ABC', 1200, 2), 3);
+  assert.deepEqual(server.calls[0].body, {});
+  assert.deepEqual(server.calls[1].body, { token: 'tok-1', name: 'ABC', score: 1200, level: 2 });
+  assert.equal(server.calls[1].method, 'POST');
+});
+
+test('a rejected or failed submit resolves to null', async () => {
+  for (const reply of [[400, { error: 'rejected' }], [200, { rank: 'first' }]]) {
+    const t = await boot({ fetch: fakeServer({ submit: reply }).fetch });
+    assert.equal(await vm.runInContext('Leaderboard.world', t.context).submit('tok', 'ABC', 10, 1), null);
+  }
+  const t = await boot();
+  assert.equal(await vm.runInContext('Leaderboard.world', t.context).startRun(), null);
+});
+
+// ---------- world leaderboard in the game ----------
+
+// Play until game over with a qualifying score, then sit on the initials screen
+function reachInitials(t, score = 999999) {
+  const p = t.play();
+  Object.assign(t.G, { score, lives: 1 });
+  p.invuln = 0;
+  t.G.enemyBullets.push(new t.Bullet(p.x, p.y, 0, 0, false));
+  t.run(6);
+  assert.equal(t.G.state, 'entername');
+}
+
+test('a game asks for a run token, and saving initials submits the score with it', async () => {
+  const server = fakeServer({ top: [200, WORLD], start: [200, { token: 'tok-9' }], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch });
+  t.run(0.2);
+  await t.flush();
+  reachInitials(t);
+  await t.flush();
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  assert.equal(t.G.worldRank, 'pending');
+  await t.flush();
+  assert.equal(t.G.worldRank, 1);
+  const submit = server.calls.find(c => c.action === 'submit');
+  assert.deepEqual(submit.body, { token: 'tok-9', name: 'AAA', score: 999999, level: 1 }); // initials start as AAA
+  assert.equal(t.G.state, 'leaderboard');
+});
+
+test('offline at the start: saving initials skips the world submit and saves locally', async () => {
+  // start fails but submit would succeed: only a working "no token, no submit" guard yields 'failed'
+  const server = fakeServer({ start: [503, {}], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch });
+  reachInitials(t);
+  await t.flush();
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  await t.flush();
+  assert.equal(t.G.worldRank, 'failed');
+  assert.equal(server.calls.filter(c => c.action === 'submit').length, 0, 'no submit without a run token');
+  assert.equal(vm.runInContext('Leaderboard.all()[0].score', t.context), 999999);
+});
+
+test('a dropped connection at submit time shows NOT SUBMITTED, local save intact', async () => {
+  let online = true;
+  const server = fakeServer({ start: [200, { token: 'tok-1' }] });
+  const t = await boot({ fetch: (url, opts) => (online ? server.fetch(url, opts) : Promise.reject(new Error('offline'))) });
+  reachInitials(t);
+  await t.flush();
+  online = false;
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  await t.flush();
+  assert.equal(t.G.worldRank, 'failed');
+  assert.equal(vm.runInContext('Leaderboard.all()[0].score', t.context), 999999);
+});
+
+test("a late answer from an old game doesn't touch the new game", async () => {
+  let release;
+  const server = fakeServer({ start: [200, { token: 'tok-1' }] });
+  const slowSubmit = new Promise(r => { release = r; });
+  const t = await boot({
+    fetch: (url, opts) => (url.endsWith('/submit')
+      ? slowSubmit.then(() => ({ ok: true, status: 200, json: async () => ({ rank: 4 }) }))
+      : server.fetch(url, opts)),
+  });
+  reachInitials(t);
+  await t.flush();
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  t.run(1);
+  t.key('keydown', 'Space'); // leaderboard -> title
+  t.run(1 / 60);
+  t.key('keyup', 'Space');
+  t.run(0.1);
+  t.play(); // a new game starts while the old submit is still in flight
+  release();
+  await t.flush();
+  assert.equal(t.G.worldRank, null);
+});
+
+test('a score that only makes the world top 10 still gets initials entry', async () => {
+  const t = await boot({ fetch: fakeServer({ top: [200, WORLD] }).fetch });
+  for (let i = 0; i < 10; i++) vm.runInContext(`Leaderboard.add('TOP', ${1e7 + i}, 9)`, t.context);
+  await vm.runInContext('Leaderboard.world', t.context).refresh(true);
+  reachInitials(t, 60000); // beats nothing locally, but the world list has only 2 entries
+});
+
+test('world requests bypass the browser cache, so a fresh score shows up straight away', async () => {
+  // The server sends cache-control: max-age=30; without this the refresh right after
+  // submitting returned the stale cached list (seen in the live end-to-end check).
+  const server = fakeServer({ top: [200, WORLD], start: [200, { token: 't' }], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch });
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  await world.refresh(true);
+  await world.startRun();
+  await world.submit('t', 'ABC', 10, 1);
+  assert.deepEqual([...server.calls.map(c => c.cache)], ['no-store', 'no-store', 'no-store']);
+});
+
+// ---------- animation accessibility and polish ----------
+
+test('motion policy caps flashes and follows reduced motion live', async () => {
+  const t = await boot();
+  assert.equal(t.G.motion.flashAlpha(1), 0.6);
+  t.mediaQuery('(prefers-reduced-motion: reduce)').setMatches(true);
+  assert.equal(t.G.motion.reduce, true);
+  assert.equal(t.G.motion.flashAlpha(1), 0.25);
+});
+
+test('reduced motion removes shake and limits requested blink rates', async () => {
+  const t = await boot({ reduceMotion: true });
+  t.play();
+  t.G.shake = 15;
+  t.run(1 / 60);
+  assert.deepEqual([t.G.motion.shakeX, t.G.motion.shakeY], [0, 0]);
+  assert.equal(t.G.motion.blinkRate(8), 3);
+  assert.equal(t.G.motion.blinkRate(2), 2);
+});
+
+test('shake offsets change on game ticks and not extra renders', async () => {
+  const t = await boot();
+  t.play();
+  t.G.shake = 15;
+  t.run(1 / 60);
+  const first = [t.G.motion.shakeX, t.G.motion.shakeY];
+  vm.runInContext('debugRender()', t.context);
+  vm.runInContext('debugRender()', t.context);
+  assert.deepEqual([t.G.motion.shakeX, t.G.motion.shakeY], first);
+  t.run(1 / 60);
+  assert.notDeepEqual([t.G.motion.shakeX, t.G.motion.shakeY], first);
+});
+
+test('level clear ignores early input and skips after the score appears', async () => {
+  const t = await boot();
+  t.play();
+  Object.assign(t.G, { state: 'levelclear', stateTime: 2.3, level: 1 });
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  assert.equal(t.G.state, 'levelclear');
+  t.key('keyup', 'Enter');
+  t.run(0.2);
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  assert.equal(t.G.state, 'playing');
+  assert.equal(t.G.level, 2);
+});
+
+test('victory ignores early taps and skips after the score appears', async () => {
+  const t = await boot({ phone: true });
+  t.play();
+  Object.assign(t.G, { state: 'victory', stateTime: 2.9, victory: true, level: 10 });
+  t.tap(240, 400);
+  t.run(1 / 60);
+  assert.equal(t.G.state, 'victory');
+  t.run(0.2);
+  t.tap(240, 400);
+  t.run(1 / 60);
+  assert.equal(t.G.state, 'playing');
+  assert.equal(t.G.level, 11);
+});
+
+test('boss entrance eases to its target over two seconds', async () => {
+  const t = await boot();
+  t.play();
+  const boss = new t.Boss(1);
+  const startY = boss.y;
+  boss.update(1, t.G);
+  assert.ok(boss.y > startY + (boss.targetY - startY) * 0.5, 'ease-out covers most distance early');
+  assert.equal(boss.state, 'enter');
+  boss.update(1, t.G);
+  assert.equal(boss.y, boss.targetY);
+  assert.equal(boss.state, 'fight');
+});
+
+test('boss sway ramps from zero after entering', async () => {
+  const t = await boot();
+  t.play();
+  const boss = new t.Boss(1);
+  boss.update(2, t.G);
+  const x0 = boss.x;
+  boss.update(0.1, t.G);
+  assert.ok(boss.swayMix > 0 && boss.swayMix < 1);
+  assert.ok(Math.abs(boss.x - x0) < 20, 'sway begins gently');
+  boss.update(0.5, t.G);
+  assert.equal(boss.swayMix, 1);
+});
+
+test('touch controls expose held press feedback and clear it on release', async () => {
+  const t = await boot({ phone: true });
+  playByTouch(t);
+  t.finger('pointerdown', 480 - 46, 640 - 112, 9);
+  assert.equal(t.Input.isTouching(480 - 46, 640 - 112, 30), true);
+  t.finger('pointerup', 480 - 46, 640 - 112, 9);
+  assert.equal(t.Input.isTouching(480 - 46, 640 - 112, 30), false);
+});
+
+test('pointer cancellation clears touch-control feedback', async () => {
+  const t = await boot({ phone: true });
+  playByTouch(t);
+  t.finger('pointerdown', 480 - 26, 104, 7);
+  assert.equal(t.Input.isTouching(480 - 26, 104, 20), true);
+  t.finger('pointercancel', 480 - 26, 104, 7);
+  assert.equal(t.Input.isTouching(480 - 26, 104, 20), false);
+});
+
+test('boss health trail catches down over 0.4 seconds', async () => {
+  const t = await boot();
+  t.play();
+  const boss = new t.Boss(1);
+  Object.assign(boss, { state: 'fight', y: boss.targetY });
+  Object.assign(t.G, { boss, phase: 'boss' });
+  t.run(1 / 60);
+  boss.hp = boss.maxHp / 2;
+  t.run(0.2);
+  assert.ok(t.G.motion.bossHpTrail > boss.hp && t.G.motion.bossHpTrail < boss.maxHp);
+  t.run(0.25);
+  assert.equal(t.G.motion.bossHpTrail, boss.hp);
+});
+
+test('boss health trail snaps upward for healing and boss replacement', async () => {
+  const t = await boot();
+  t.play();
+  const first = new t.Boss(1);
+  Object.assign(first, { state: 'fight', hp: first.maxHp / 2 });
+  Object.assign(t.G, { boss: first, phase: 'boss' });
+  t.run(1 / 60);
+  first.hp = first.maxHp;
+  t.run(1 / 60);
+  assert.equal(t.G.motion.bossHpTrail, first.maxHp);
+  const second = new t.Boss(2);
+  Object.assign(t.G, { boss: second, phase: 'boss' });
+  t.run(0.05);
+  assert.equal(t.G.motion.bossHpOwner, second);
+  assert.equal(t.G.motion.bossHpTrail, second.hp);
+});
+
+test('level banner fades over 0.2 seconds at each edge', async () => {
+  const t = await boot();
+  assert.equal(t.G.motion.bannerAlpha(2.5), 0);
+  assert.ok(Math.abs(t.G.motion.bannerAlpha(2.4) - 0.5) < 1e-9);
+  assert.equal(t.G.motion.bannerAlpha(1.25), 1);
+  assert.equal(t.G.motion.bannerAlpha(0.1), 0.5);
+  assert.equal(t.G.motion.bannerAlpha(0), 0);
+});
+
+test('title and table crossfade over 0.2 seconds', async () => {
+  const t = await boot();
+  const midpoint = t.G.motion.titleAlphas(8.9);
+  assert.ok(Math.abs(midpoint.title - 0.5) < 1e-9);
+  assert.ok(Math.abs(midpoint.table - 0.5) < 1e-9);
+  assert.deepEqual({ ...t.G.motion.titleAlphas(9) }, { title: 0, table: 1 });
+  const secondMidpoint = t.G.motion.titleAlphas(17.9);
+  assert.ok(Math.abs(secondMidpoint.title - 0.5) < 1e-9);
+  assert.ok(Math.abs(secondMidpoint.table - 0.5) < 1e-9);
+  assert.deepEqual({ ...t.G.motion.titleAlphas(18) }, { title: 1, table: 0 });
+});
+
+test('world rank one starts one champion burst without blocking continue', async () => {
+  const server = fakeServer({ top: [200, WORLD], start: [200, { token: 'champ' }], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch });
+  reachInitials(t);
+  await t.flush();
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  await t.flush();
+  assert.equal(t.G.worldRank, 1);
+  assert.ok(t.G.motion.championTime > 0);
+  assert.equal(t.G.motion.championEmitted, false);
+  t.run(0.05);
+  assert.equal(t.G.motion.championEmitted, true);
+  const emittedWaves = t.G.waves.length;
+  t.run(0.2);
+  assert.equal(t.G.waves.length, emittedWaves, 'shockwave is not emitted again');
+  t.key('keyup', 'Enter');
+  t.run(0.6);
+  t.key('keydown', 'Enter');
+  t.run(0.05);
+  assert.equal(t.G.state, 'title');
+});
+
+test('reduced motion shows static world rank one without a burst', async () => {
+  const server = fakeServer({ top: [200, WORLD], start: [200, { token: 'champ' }], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch, reduceMotion: true });
+  reachInitials(t);
+  await t.flush();
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  await t.flush();
+  assert.equal(t.G.motion.championTime, Infinity);
+  assert.equal(t.G.motion.championEmitted, true);
+  assert.equal(t.G.particles.length, 0);
+  assert.equal(t.G.waves.length, 0);
+});
+
+test('lower and failed world ranks do not celebrate', async () => {
+  const t = await boot();
+  t.G.motion.startChampion(2);
+  assert.equal(t.G.motion.championTime, 0);
+  t.G.motion.startChampion(null);
+  assert.equal(t.G.motion.championTime, 0);
 });
