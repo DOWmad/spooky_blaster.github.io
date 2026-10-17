@@ -205,6 +205,16 @@ const Sprites = (() => {
       '.MMMMRRRRRMMMM.',
       '..M.M.....M.M..',
     ] },
+    siren: { scale: 3, rows: [
+      '....CCCCC....',
+      '..CCWWWWWCC..',
+      '.CCWWCCWWCC..',
+      'CCWWCCCCWWCC.',
+      'CCWCCRRCCWCC.',
+      '.CCWWCCWWCC..',
+      '..CCWWWWWCC..',
+      '....CCCCC....',
+    ] },
     bonus: { scale: 3, rows: [
       '.....QQQQQ.....',
       '...QQWWWWWQQ...',
@@ -491,6 +501,20 @@ const Sprites = (() => {
   // Classic versions of the newer bosses: an alpha prowler and a stone golem
   ART.boss4 = { scale: 5, rows: recolor(ART.h_boss4.rows, { F: 'P', A: 'M' }) };
   ART.boss5 = { scale: 5, rows: recolor(ART.h_boss5.rows, { Z: 'M', K: 'F', E: 'A', A: 'C' }) };
+  ART.h_siren = { scale: 3, rows: recolor(ART.siren.rows, { C: 'V', R: 'L' }) };
+  ART.boss_mirror = { scale: 5, rows: [
+    '....CCCCCCCCCCC....',
+    '..CCWWCCCCCCCWWCC..',
+    '.CCWWCCCCCCCCCWWCC.',
+    'CCWWCCBBBBBBBCCWWCC',
+    'CCWCCBBWWCWWBBCCWCC',
+    'CCWCCBBWWCWWBBCCWCC',
+    'CCWWCCBBBBBBBCCWWCC',
+    '.CCWWCCCCCCCCCWWCC.',
+    '..CCWWCCCCCCCWWCC..',
+    '....CCCCCCCCCCC....',
+  ] };
+  ART.h_boss_mirror = { scale: 5, rows: recolor(ART.boss_mirror.rows, { C: 'V', B: 'E', W: 'S' }) };
 
   // Halloween ship classes are recolors of the classic hulls
   const PUMPKIN_SHIP = { W: 'O', C: 'L', B: 'K', R: 'V', Y: 'N' };

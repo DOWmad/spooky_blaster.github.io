@@ -50,6 +50,7 @@ const LEVEL_SCRIPTS = [
   [
     [1, 'line', 'diver', 3],
     [3, 'line', 'splitter', 2],
+    [5, 'line', 'siren', 1],
     [6, 'scatter', 'diver', 6, 4],
     [9, 'v', 'grunt', 7],
     [11, 'line', 'splitter', 3],
@@ -66,6 +67,7 @@ const LEVEL_SCRIPTS = [
   [
     [1, 'sweep', -1],
     [3, 'line', 'phantom', 2],
+    [5, 'line', 'siren', 1],
     [6, 'sweep', 1],
     [8, 'v', 'swooper', 7],
     [9, 'line', 'necromancer', 1],
@@ -86,6 +88,7 @@ const LEVEL_SCRIPTS = [
     [2, 'sweep', -1],
     [3, 'line', 'necromancer', 1],
     [4, 'scatter', 'diver', 8, 4],
+    [6, 'line', 'siren', 1],
     [7, 'line', 'tank', 3],
     [9, 'column', 'swooper', 10, 0.25],
     [9.5, 'column', 'swooper', 10, 0.75],

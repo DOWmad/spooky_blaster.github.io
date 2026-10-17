@@ -88,7 +88,8 @@ async function boot({ phone = false, reduceMotion = false, fetch = () => Promise
   const Input = vm.runInContext('Input', sandbox);
   // Let pending network promises settle
   const flush = () => new Promise(r => setImmediate(r));
-  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, flush, mediaQuery, context: sandbox };
+  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, flush, mediaQuery, context: sandbox,
+    classOf: name => vm.runInContext(name, sandbox) };
 }
 
 // A fake leaderboard server: routes by the last path segment and records each request
@@ -597,6 +598,103 @@ test('rockets hit the monster twice as hard', async () => {
   t.run(1 / 60);
   assert.equal(hp - boss.hp, 6);
   assert.deepEqual(t.errors, []);
+});
+
+test('a siren appears in later waves and sends a dodgeable soundwave', async () => {
+  const t = await boot();
+  const p = t.play();
+  const types = vm.runInContext('buildLevel(4).map(ev => ev.type)', t.context);
+  assert.ok(types.includes('siren'));
+  const siren = new t.Enemy('siren', 240, 100);
+  Object.assign(siren, { y: 100, mode: 'call', modeT: 0.74, speed: 0 });
+  siren.update(0.02, t.G);
+  const wave = t.G.enemyBullets.find(b => b instanceof t.classOf('SonicWave'));
+  assert.ok(wave);
+  assert.ok(Math.abs(wave.gapX - p.x) >= 50);
+  p.invuln = 0;
+  p.shields = 1;
+  wave.y = p.y;
+  t.run(1 / 60);
+  assert.equal(p.shields, 0, 'outside the gap is dangerous');
+  p.x = wave.gapX;
+  p.invuln = 0;
+  wave.dead = false;
+  t.G.enemyBullets.push(wave);
+  t.run(1 / 60);
+  assert.equal(p.alive, true, 'the gap is safe');
+});
+
+test('chain lightning fires as a secondary and jumps to nearby enemies once each', async () => {
+  const t = await boot();
+  const p = t.play();
+  p.secondary = { kind: 'chain', level: 1 };
+  p.fireSecondary(t.G);
+  const ChainBolt = t.classOf('ChainBolt');
+  assert.ok(t.G.playerBullets.some(b => b instanceof ChainBolt));
+  t.G.playerBullets = [new ChainBolt(150, 200, 1)];
+  const targets = [150, 200, 250, 390].map(x => new t.Enemy('shooter', x, 200));
+  for (const e of targets) { e.speed = 0; e.fireTimer = 999; }
+  t.G.enemies.push(...targets);
+  t.run(1 / 60);
+  assert.ok(targets[0].hp < 3);
+  assert.ok(targets[1].hp < 3);
+  assert.equal(targets[3].hp, 3, 'distant enemies are outside the chain');
+});
+
+test('chrono pickup slows enemy bullets for three seconds without slowing enemies', async () => {
+  const t = await boot();
+  const p = t.play();
+  t.G.powerups.push(new t.PowerUp(p.x, p.y, 'chrono'));
+  t.run(1 / 60);
+  assert.ok(t.G.chrono > 2.9);
+  const shot = new t.Bullet(50, 100, 0, 100, false);
+  const enemy = new t.Enemy('grunt', 100, 100);
+  t.G.enemyBullets.push(shot);
+  t.G.enemies.push(enemy);
+  t.run(1);
+  assert.ok(shot.y > 125 && shot.y < 140);
+  assert.ok(enemy.y > 205);
+  t.run(2.1);
+  assert.equal(t.G.chrono, 0);
+});
+
+test('the mirror boss replaces the second boss on later loops and exposes one side', async () => {
+  const t = await boot();
+  t.play();
+  const boss = fightBoss(t, 8);
+  assert.equal(boss.def.hname, 'MIRROR WITCH');
+  const hp = boss.hp;
+  t.G.playerBullets.push(new t.Bullet(boss.x, boss.y, 0, 0, true, { dmg: 10 }));
+  t.run(1 / 60);
+  assert.equal(boss.hp, hp, 'the mirrored centre blocks a shot');
+  t.G.playerBullets.push(new t.Bullet(boss.x + boss.weakSide * boss.w * 0.25, boss.y, 0, 0, true, { dmg: 10 }));
+  t.run(1 / 60);
+  assert.equal(boss.hp, hp - 10);
+  const side = boss.weakSide;
+  boss.attack('aimed', t.G);
+  assert.equal(boss.weakSide, -side, 'the opening changes after an attack');
+});
+
+test('graze capacitor rewards each near miss once while the ship is exposed', async () => {
+  const t = await boot();
+  const p = t.play();
+  t.G.powerups.push(new t.PowerUp(p.x, p.y, 'capacitor'));
+  t.run(1 / 60);
+  assert.equal(p.capacitor, true);
+  p.power = 5;
+  p.invuln = 0;
+  const score = t.G.score;
+  const near = new t.Bullet(p.x + 20, p.y, 0, 0, false);
+  t.G.enemyBullets.push(near);
+  t.run(1 / 60);
+  assert.equal(t.G.score, score + 25);
+  assert.equal(t.G.ultCharge, 1);
+  t.run(0.2);
+  assert.equal(t.G.score, score + 25);
+  p.invuln = 1;
+  t.G.enemyBullets.push(new t.Bullet(p.x - 20, p.y, 0, 0, false));
+  t.run(1 / 60);
+  assert.equal(t.G.score, score + 25, 'invulnerability cannot farm grazes');
 });
 
 // ---------- touch controls ----------

@@ -81,6 +81,44 @@ class Bullet {
   }
 }
 
+// A descending wall with a readable opening. Escort drones cannot block it.
+class SonicWave {
+  constructor(y, gapX) {
+    this.y = y;
+    this.gapX = gapX;
+    this.gapHalf = 38;
+    this.speed = 170;
+    this.dead = false;
+  }
+
+  update(dt) {
+    this.y += this.speed * dt;
+    if (this.y > H + 10) this.dead = true;
+  }
+
+  hits(player) {
+    return Math.abs(this.y - player.y) < player.r + 5
+      && Math.abs(player.x - this.gapX) > this.gapHalf - player.r;
+  }
+
+  draw(ctx) {
+    ctx.fillStyle = Theme.halloween ? '#cc66ff' : '#33ffff';
+    ctx.fillRect(0, this.y - 3, Math.max(0, this.gapX - this.gapHalf), 6);
+    const right = this.gapX + this.gapHalf;
+    ctx.fillRect(right, this.y - 3, W - right, 6);
+    ctx.fillStyle = '#ffffff';
+    for (const edge of [this.gapX - this.gapHalf, right]) ctx.fillRect(edge - 2, this.y - 7, 4, 14);
+  }
+}
+
+class ChainBolt extends Bullet {
+  constructor(x, y, level = 1) {
+    super(x, y, 0, -560, true, { dmg: [0, 1.5, 2, 2.5][level], color: '#aaffff', r: 4 });
+    this.chainJumps = level + 1;
+    this.chainRange = 75 + level * 25;
+  }
+}
+
 // Homing missile fired at max weapon power. Lives in playerBullets so the
 // normal bullet collision code handles it.
 class Missile {
@@ -254,6 +292,7 @@ const SECONDARY = {
   homing:  { name: 'HOMING',  label: 'H', levels: [null, { every: 0.6, pair: false }, { every: 0.4, pair: false }, { every: 0.4, pair: true }] },
   laser:   { name: 'LASER',   label: 'L', levels: [null, { width: 3, dps: 7 }, { width: 5, dps: 11 }, { width: 8, dps: 16 }] },
   cross:   { name: 'CROSS',   label: 'C', levels: [null, { every: 1.2, pair: false, dmg: 2 }, { every: 1.0, pair: false, dmg: 3 }, { every: 0.9, pair: true, dmg: 3 }] },
+  chain:   { name: 'CHAIN',   label: 'Z', levels: [null, { every: 0.8 }, { every: 0.68 }, { every: 0.55 }] },
 };
 const MAX_SECONDARY = 3;
 const MAX_DRONES = 2;
@@ -302,6 +341,7 @@ class Player {
     this.silver = 0;   // Halloween: seconds of silver shots (slay werewolves)
     this.cursed = 0;   // Halloween: seconds of reversed controls from a witch's curse
     this.jam = 0;      // Halloween: seconds of jammed guns (black cat crossed your path)
+    this.capacitor = false; // near misses award score and ultimate charge at max power
     this.secondary = null; // { kind: 'rockets' | 'homing', level: 1..MAX_SECONDARY }
     this.drones = [];
     this.reset();
@@ -328,6 +368,7 @@ class Player {
     this.silver = 0;
     this.cursed = 0;
     this.jam = 0;
+    this.capacitor = false;
     if (this.secondary && --this.secondary.level <= 0) this.secondary = null;
     this.setDroneCount(Math.max(0, this.drones.length - 1));
   }
@@ -385,6 +426,11 @@ class Player {
   fireSecondary(game) {
     const { kind, level } = this.secondary;
     const spec = SECONDARY[kind].levels[level];
+    if (kind === 'chain') {
+      game.playerBullets.push(new ChainBolt(this.x, this.y - 12, level));
+      this.secondaryCool = spec.every;
+      return;
+    }
     if (kind === 'cross') {
       for (const a of spec.pair ? [-0.3, 0.3] : [0]) game.playerBullets.push(new HolyCross(this.x, this.y - 10, spec.dmg, a));
       this.secondaryCool = spec.every;
@@ -536,6 +582,7 @@ const ENEMY_TYPES = {
   minelayer: { sprite: 'minelayer', hp: 6,  score: 500,  speed: 90,  r: 18, drop: 0.5 },
   mine:      { sprite: 'mine',      hp: 1,  score: 50,   speed: 50,  r: 9,  drop: 0 },
   phantom:   { sprite: 'phantom',   hp: 4,  score: 400,  speed: 100, r: 14, drop: 0.2 },
+  siren:     { sprite: 'siren',     hp: 5,  score: 450,  speed: 100, r: 16, drop: 0.14 },
   bonus:     { sprite: 'bonus',     hp: 10, score: 3000, speed: 150, r: 18, drop: 0 },
   necromancer: { sprite: 'necromancer', hp: 50, score: 1000, speed: 70, r: 16, drop: 0.4 },
 };
@@ -598,6 +645,7 @@ class Enemy {
     this.ritualSuccesses = 0;
     this.necromancerTime = 0;
     this.stunTime = 0;
+    this.gapX = null;
     if (type === 'minelayer' || type === 'bonus') {
       // Side-crossers: enter from one edge and fly to the other
       const from = opts.side || (Math.random() < 0.5 ? -1 : 1);
@@ -770,6 +818,26 @@ class Enemy {
           this.y += this.speed * 1.5 * dt;
         }
         break;
+      case 'siren':
+        if (this.mode === 'enter') {
+          this.y += this.speed * dt;
+          if (this.y >= Math.min(this.stopY, 150)) this.setMode('call');
+        } else if (this.mode === 'call') {
+          if (this.gapX === null) {
+            const px = game.player.x;
+            this.gapX = clamp(px + (px <= W / 2 ? 90 : -90), 55, W - 55);
+            Sound.sfx.warning();
+          }
+          if (this.modeT >= 0.75) {
+            game.enemyBullets.push(new SonicWave(this.y + 18, this.gapX));
+            this.setMode('leave');
+            Sound.sfx.enemyShoot();
+          }
+        } else {
+          this.y -= this.speed * dt;
+          if (this.y < -40) this.dead = true;
+        }
+        break;
       case 'necromancer':
         if (this.mode === 'enter') {
           this.y += this.speed * dt;
@@ -875,6 +943,11 @@ class Enemy {
     const alpha = this.alpha;
     if (alpha <= 0) return;
     this.drawRitual(ctx, t);
+    if (this.type === 'siren' && this.mode === 'call' && this.gapX !== null) {
+      ctx.fillStyle = Theme.halloween ? 'rgba(204, 102, 255, 0.35)' : 'rgba(51, 255, 255, 0.35)';
+      ctx.fillRect(0, this.y + 17, this.gapX - 38, 2);
+      ctx.fillRect(this.gapX + 38, this.y + 17, W - this.gapX - 38, 2);
+    }
     const s = Sprites.get(this.spriteKey(t));
     const x = Math.round(this.x - s.w / 2);
     const y = Math.round(this.y - s.h / 2);
@@ -965,7 +1038,10 @@ const POWERUPS = {
   homing:  { label: 'H', name: 'HOMING',  color: '#ccccff', weight: 10 },
   drone:   { label: 'D', name: 'DRONE',   color: '#33ffff', weight: 8 },
   laser:   { label: 'L', name: 'LASER',   color: '#ff3366', weight: 8 },
+  chain:   { label: 'Z', name: 'CHAIN',   color: '#aaffff', weight: 8 },
   shield:  { label: 'O', name: 'SHIELD',  color: '#3399ff', weight: 12 },
+  chrono:  { label: 'Q', name: 'CHRONO CELL', color: '#99ddff', weight: 4 },
+  capacitor: { label: 'K', name: 'GRAZE CAP', color: '#aaffff', weight: 5 },
   ship:    { label: 'U', name: 'UPGRADE', color: '#ffffff', weight: 3 },
   bomb:    { label: 'B', name: 'BOMB',    color: '#ff3344', weight: 9 },
   life:    { label: '+', name: '1UP',     color: '#ff44dd', weight: 2 },
@@ -1132,11 +1208,21 @@ const FINAL_BOSS = {
   ],
 };
 
+// Replaces the second boss from loop two onward, keeping the six-level campaign.
+const MIRROR_BOSS = {
+  name: 'MIRROR CORE', hname: 'MIRROR WITCH', sprite: 'boss_mirror', hp: 260, mirror: true,
+  phases: [
+    { hp: 1, patterns: ['aimed', 'wave', 'ring'] },
+    { hp: 0.5, patterns: ['spiral', 'wave', 'twinLaser', 'cross'] },
+  ],
+};
+
 const randInt = (a, b) => Math.floor(rand(a, b + 1));
 
 class Boss {
-  constructor(level, final = false, loop = 0) {
-    this.def = final ? FINAL_BOSS : BOSS_DEFS[(level - 1) % CAMPAIGN_LENGTH];
+  constructor(level, final = false, loop = loopOf(level)) {
+    this.def = final ? FINAL_BOSS : loop > 0 && (level - 1) % CAMPAIGN_LENGTH === 1
+      ? MIRROR_BOSS : BOSS_DEFS[(level - 1) % CAMPAIGN_LENGTH];
     this.maxHp = Math.round(final ? this.def.hp * (1 + 0.5 * loop) : this.def.hp * (1 + 0.25 * (level - 1)));
     this.hp = this.maxHp;
     const s = Sprites.get(this.def.sprite);
@@ -1164,8 +1250,10 @@ class Boss {
     this.leap = null;   // werewolf pounce in progress
     this.silverT = 0;   // while > 0, silver wounds stop werewolf regeneration
     this.revived = false;
+    this.weakSide = -1;
+    this.blockFlash = 0;
     // Time pressure: when the clock runs out the boss goes berserk
-    this.timeLimit = final ? 100 : 55;
+    this.timeLimit = final ? 100 : this.def.mirror ? 70 : 55;
     this.timeLeft = this.timeLimit;
     this.berserk = false;
     this.doomT = 0;
@@ -1226,6 +1314,7 @@ class Boss {
   update(dt, game) {
     this.t += dt;
     this.flash = Math.max(0, this.flash - dt);
+    this.blockFlash = Math.max(0, this.blockFlash - dt);
     if (this.state === 'enter') {
       this.enterTime = Math.min(this.enterDuration, this.enterTime + dt);
       const k = this.enterTime / this.enterDuration;
@@ -1328,6 +1417,10 @@ class Boss {
   }
 
   attack(pattern, game) {
+    if (this.def.mirror) {
+      this.weakSide *= -1;
+      this.blockFlash = 0.3;
+    }
     const muzzle = () => this.y + this.h / 2 - 8;
     const rage = this.raging;
     switch (pattern) {
@@ -1442,6 +1535,10 @@ class Boss {
     return Math.abs(px - this.x) < this.w * 0.42 && Math.abs(py - this.y) < this.h * 0.4;
   }
 
+  acceptsHit(x) {
+    return !this.def.mirror || (x - this.x) * this.weakSide > this.w * 0.08;
+  }
+
   draw(ctx) {
     if (this.laser) {
       const top = this.laser.bolt ? 0 : this.y + this.h * 0.3;
@@ -1473,5 +1570,20 @@ class Boss {
     const s = Sprites.get(this.def.sprite);
     ctx.drawImage(this.flash > 0 ? s.flash : s.img,
       Math.round(this.x - this.w / 2), Math.round(this.y - this.h / 2));
+    if (this.def.mirror) {
+      const sideX = this.x + this.weakSide * this.w * 0.26;
+      ctx.fillStyle = Theme.halloween ? '#ee99ff' : '#66ffff';
+      ctx.globalAlpha = 0.2;
+      ctx.fillRect(sideX - 16, this.y - this.h * 0.34, 32, this.h * 0.68);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = ctx.fillStyle;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(sideX - 16, this.y - this.h * 0.34, 32, this.h * 0.68);
+      ctx.fillRect(sideX - 9, this.y - this.h * 0.3, 18, 4);
+      ctx.fillRect(sideX - 9, this.y + this.h * 0.3 - 4, 18, 4);
+      ctx.strokeStyle = this.blockFlash > 0 ? '#ffffff' : '#668899';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(this.x - this.w * 0.43, this.y - this.h * 0.42, this.w * 0.86, this.h * 0.84);
+    }
   }
 }

@@ -57,8 +57,8 @@
     combo: 0, comboTimer: 0, tookDamage: false, respawnTimer: 0, paused: false,
     shake: 0, flash: 0, bannerTime: 0, levelBonus: 0, perfectBonus: 0,
     name: [0, 0, 0], namePos: 0, lastRank: -1,
-    ultCharge: 0, ultTime: 0,
-    waves: [], hitstop: 0, bonusTimer: 0, bonusCount: 0, victory: false, livesBonus: 0, corpses: [],
+    ultCharge: 0, ultTime: 0, chrono: 0,
+    waves: [], arcs: [], hitstop: 0, bonusTimer: 0, bonusCount: 0, victory: false, livesBonus: 0, corpses: [],
     cat: null, catTimer: 0, treats: 0, spook: 0,
     runId: 0, runToken: null, worldRank: null,
     motion,
@@ -388,6 +388,8 @@
     G.bannerTime = 2.5;
     G.paused = false;
     G.ultTime = 0;
+    G.chrono = 0;
+    G.arcs = [];
     G.bonusTimer = rand(10, 22);
     G.bonusCount = 0;
     G.corpses = [];
@@ -465,7 +467,7 @@
     }
     const boss = G.boss;
     if (boss && boss.y < p.y && Math.abs(boss.x - p.x) < half + boss.w * 0.42) {
-      damageBoss(dps * dt * (Theme.halloween && boss.def.final ? 3 : 1)); // sunlight scorches Dracula
+      damageBoss(dps * dt * (Theme.halloween && boss.def.final ? 3 : 1), p.x); // sunlight scorches Dracula
     }
     if (Math.random() < 0.6) {
       explode(p.x + rand(-half, half), rand(0, p.y), ['#ffffff', '#33ffff', '#ff44dd'], 2, 80);
@@ -491,6 +493,22 @@
     }
   }
 
+  function chainFrom(source, bolt) {
+    const visited = new Set([source]);
+    let from = source;
+    for (let jump = 0; jump < bolt.chainJumps; jump++) {
+      const next = G.enemies.filter(e => !e.dead && !e.intangible && !visited.has(e)
+        && dist2(from, e) <= bolt.chainRange ** 2)
+        .sort((a, b) => dist2(from, a) - dist2(from, b))[0];
+      if (!next) break;
+      G.arcs.push({ x1: from.x, y1: from.y, x2: next.x, y2: next.y, life: 0.15 });
+      visited.add(next);
+      hitTarget(next, bolt.dmg * 0.8, true);
+      from = next;
+    }
+    if (visited.size > 1) Sound.sfx.laser();
+  }
+
   function splash(x, y, { radius, dmg, shake = 3, cluster = 0 }, direct) {
     explode(x, y, ['#ffee33', '#ff9933', '#ff3344', '#ffffff'], 10 + radius / 3, radius * 4);
     shockwave(x, y, radius, '#ff9933', 0.3, 4);
@@ -499,7 +517,7 @@
       if (o !== direct && !o.dead && dist2(c, o) < (radius + o.r) ** 2) hitTarget(o, dmg, true);
     }
     const b = G.boss;
-    if (b && direct !== b && dist2(c, b) < (radius + b.w * 0.4) ** 2) damageBoss(dmg);
+    if (b && direct !== b && dist2(c, b) < (radius + b.w * 0.4) ** 2) damageBoss(dmg, x);
     // Top-level rockets burst into shrapnel
     for (let i = 0; i < cluster; i++) {
       const a = (i / cluster) * Math.PI * 2;
@@ -606,7 +624,7 @@
       if (!o.dead && o.y < p.y && Math.abs(o.x - p.x) < spec.width + o.r) hitTarget(o, spec.dps * dt, true);
     }
     const boss = G.boss;
-    if (boss && boss.y < p.y && Math.abs(boss.x - p.x) < spec.width + boss.w * 0.42) damageBoss(spec.dps * dt);
+    if (boss && boss.y < p.y && Math.abs(boss.x - p.x) < spec.width + boss.w * 0.42) damageBoss(spec.dps * dt, p.x);
   }
 
   // Sunbeam (Halloween ultimate): trolls turn to stone in sunlight
@@ -617,9 +635,13 @@
     killEnemy(o);
   }
 
-  function damageBoss(dmg) {
+  function damageBoss(dmg, hitX = G.player.x, bypassMirror = false) {
     const b = G.boss;
     if (!b || b.state !== 'fight' || b.dead) return;
+    if (!bypassMirror && !b.acceptsHit(hitX)) {
+      b.blockFlash = 0.1;
+      return;
+    }
     if (Theme.halloween && b.def.final && G.player.garlic > 0) dmg *= 2; // Dracula hates garlic
     b.hp -= dmg;
     b.flash = 0.05;
@@ -740,7 +762,7 @@
   function bomb() {
     G.enemyBullets = [];
     for (const o of [...G.enemies, ...G.asteroids]) hitTarget(o, 10, true);
-    damageBoss(20);
+    damageBoss(20, G.player.x, true);
     G.flash = 0.7;
     G.shake = 10;
     Sound.sfx.bigExplode();
@@ -767,6 +789,7 @@
       case 'homing':
       case 'laser':
       case 'cross':
+      case 'chain':
         if (!p.secondary) p.secondary = { kind, level: 1 };
         else if (p.secondary.kind !== kind) p.secondary.kind = kind; // swap, keep level
         else if (p.secondary.level >= MAX_SECONDARY) maxed();
@@ -789,6 +812,10 @@
         }
         break;
       case 'rapid': p.rapid = 10; break;
+      case 'chrono': G.chrono = 3; label = Theme.halloween ? 'WITCHING HOUR' : 'CHRONO CELL'; break;
+      case 'capacitor':
+        if (p.capacitor) maxed(); else { p.capacitor = true; label = 'GRAZE CAPACITOR'; }
+        break;
       case 'garlic': p.garlic = 10; break;
       case 'holy': p.holy = 10; break;
       case 'silver': p.silver = 10; break;
@@ -922,9 +949,11 @@
 
     G.spook = Math.max(0, G.spook - dt);
     const spooked = G.spook > 0;
-    for (const list of [G.playerBullets, G.asteroids, G.powerups, ...(spooked ? [] : [G.enemyBullets, G.enemies])]) {
+    G.chrono = Math.max(0, G.chrono - dt);
+    for (const list of [G.playerBullets, G.asteroids, G.powerups, ...(spooked ? [] : [G.enemies])]) {
       for (const o of list) o.update(dt, G);
     }
+    if (!spooked) for (const b of G.enemyBullets) b.update(dt * (G.chrono > 0 ? 0.3 : 1), G);
     if (spooked) for (const e of G.enemies) e.flash = Math.max(0, e.flash - dt);
     if (G.boss && G.phase === 'boss') G.boss.update(dt, G);
 
@@ -952,7 +981,7 @@
         }
         if (boss && boss.state === 'fight' && !boss.dead && ready(boss) && boss.hitTest(b.x, b.y)) {
           b.hits.set(boss, G.t + 0.25);
-          damageBoss(b.dmg * holyMult(boss));
+          damageBoss(b.dmg * holyMult(boss), b.x);
         }
         continue;
       }
@@ -964,11 +993,12 @@
       const mult = (b.holy ? holyMult(target) : 1) * (b.silver ? silverMult(target) : 1) * (b instanceof Rocket ? fireMult(target) : 1);
       if (mult > 1) explode(b.x, b.y, b.silver ? ['#e8eef8', '#ffffff'] : ['#66ccff', '#ffffff'], 4, 80);
       if (target === boss) {
-        damageBoss(b.dmg * mult);
+        damageBoss(b.dmg * mult, b.x);
         if (!boss.dead) Sound.sfx.hit();
       } else {
         hitTarget(target, b.dmg * mult);
       }
+      if (b instanceof ChainBolt) chainFrom(target, b);
       if (b.splash) splash(b.x, b.y, b.splash, target);
     }
 
@@ -977,6 +1007,10 @@
 
     for (const b of G.enemyBullets) {
       if (b.dead) continue;
+      if (b instanceof SonicWave) {
+        if (b.hits(p)) { b.dead = true; damagePlayer(); if (!p.alive) return; }
+        continue;
+      }
       const blocker = p.drones.find(d => dist2(b, d) < (b.r + d.r) ** 2);
       if (blocker) {
         b.dead = true;
@@ -988,6 +1022,12 @@
         if (b.curse) { cursePlayer(); continue; }
         damagePlayer();
         if (!p.alive) return;
+      } else if (p.capacitor && !b.grazed && p.invuln <= 0 && G.ultTime <= 0
+          && dist2(b, p) < (b.r + p.r + 18) ** 2) {
+        b.grazed = true;
+        addPoints(25);
+        chargeUltimate(1);
+        G.arcs.push({ x1: b.x, y1: b.y, x2: p.x, y2: p.y, life: 0.12 });
       }
     }
     for (const e of G.enemies) {
@@ -1125,6 +1165,8 @@
       if (w.delay > 0) w.delay -= dt; else w.life -= dt;
     }
     G.waves = G.waves.filter(w => w.life > 0);
+    for (const arc of G.arcs) arc.life -= dt;
+    G.arcs = G.arcs.filter(arc => arc.life > 0);
     for (const tx of G.texts) {
       tx.y -= 30 * dt;
       tx.life -= dt;
@@ -1241,10 +1283,10 @@
   const ENEMY_NAMES = {
     classic: { grunt: 'GRUNT', swooper: 'SWOOPER', shooter: 'GUNNER', tank: 'TANK',
       diver: 'DIVER', splitter: 'SPLITTER', minelayer: 'MINER', phantom: 'PHANTOM',
-      necromancer: 'CARRIER' },
+      necromancer: 'CARRIER', siren: 'SIREN' },
     halloween: { grunt: 'GHOUL', swooper: 'BAT', shooter: 'WARLOCK', tank: 'TROLL',
       diver: 'VAMPIRE', splitter: 'SPIDER', minelayer: 'WITCH', phantom: 'GHOST',
-      necromancer: 'NECROMANCER' },
+      necromancer: 'NECROMANCER', siren: 'BANSHEE' },
   };
   const blink = (rate = 2) => G.motion.blink(G.t, rate);
   const rainbow = offset => `hsl(${(G.t * 120 + offset) % 360}, 100%, 60%)`;
@@ -1318,6 +1360,15 @@
       ctx.arc(w.x, w.y, w.maxR * (1 - k) + 2, 0, Math.PI * 2);
       ctx.stroke();
     }
+    for (const arc of G.arcs) {
+      ctx.globalAlpha = Math.min(1, arc.life / 0.15);
+      ctx.strokeStyle = Theme.halloween ? '#cc99ff' : '#99ffff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(arc.x1, arc.y1);
+      ctx.lineTo(arc.x2, arc.y2);
+      ctx.stroke();
+    }
     ctx.globalAlpha = 1;
     for (const tx of G.texts) {
       ctx.globalAlpha = Math.min(1, tx.life * 2);
@@ -1372,6 +1423,8 @@
     if (p.spread > 0) chip(`S${p.spread}`, POWERUPS.spread.color);
     if (p.secondary) chip(`${SECONDARY[p.secondary.kind].label}${p.secondary.level}`, POWERUPS[p.secondary.kind].color);
     if (p.drones.length) chip(`D${p.drones.length}`, POWERUPS.drone.color);
+    if (p.capacitor) chip('GC', POWERUPS.capacitor.color);
+    if (G.chrono > 0) chip(`T${Math.ceil(G.chrono)}`, POWERUPS.chrono.color);
     if (p.garlic > 0) chip(`G${Math.ceil(p.garlic)}`, POWERUPS.garlic.color);
     if (p.holy > 0) chip(`W${Math.ceil(p.holy)}`, POWERUPS.holy.color);
     if (p.silver > 0) chip(`Ag${Math.ceil(p.silver)}`, POWERUPS.silver.color);
@@ -1420,6 +1473,7 @@
             urgent ? (blink(4) ? '#ff3344' : '#ffffff') : '#aaaaaa');
         }
       }
+      if (b.def.mirror) text('SHOOT THE LIT SIDE', W / 2, 105, 8, '#aaffff');
     }
   }
 
@@ -1503,11 +1557,15 @@
     text('- POWER-UPS -', W / 2, 348, 10, Theme.c.label);
     activePowerupKinds().forEach((kind, i) => {
       const x = 40 + (i % 3) * 150;
-      const y = 370 + Math.floor(i / 3) * 23;
-      const u = new PowerUp(x, y, kind);
-      u.t = G.t;
-      u.draw(ctx);
-      text(POWERUPS[kind].name, x + 20, y, 8, POWERUPS[kind].color, 'left');
+      const y = 366 + Math.floor(i / 3) * 18;
+      const def = POWERUPS[kind];
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(x - 8, y - 8, 16, 16);
+      ctx.strokeStyle = def.color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - 8, y - 8, 16, 16);
+      text(def.label, x, y, def.label.length > 1 ? 6 : 8, def.color);
+      text(def.name, x + 15, y, 8, def.color, 'left');
     });
 
     const tips = Theme.halloween
@@ -1516,9 +1574,12 @@
         'THE MONSTER FEARS FIRE - USE ROCKETS', 'HOLY CROSSES RETURN TO YOUR HAND',
         'SLAY THE NECROMANCER AND HIS DEAD CRUMBLE', 'BEAT BOSSES BEFORE THEY GO BERSERK',
         'WITCHES CURSE YOU - HOLY WATER PROTECTS', 'NEVER LET A BLACK CAT CROSS YOUR PATH',
-        'A TREAT TURNS A BLACK CAT INTO GOOD LUCK']
+        'A TREAT TURNS A BLACK CAT INTO GOOD LUCK', 'BANSHEE WAVES HAVE A SAFE GAP',
+        'CHAIN BOLTS JUMP BETWEEN NEARBY FOES', 'NEAR MISSES FEED THE GRAZE CAPACITOR']
       : ['MAX POWER KILLS CHARGE THE ULTIMATE', 'LASERS PIERCE EVERYTHING IN THEIR PATH',
-        'DESTROY CARRIERS BEFORE THEY REBUILD', 'BEAT BOSSES BEFORE THEY GO BERSERK'];
+        'DESTROY CARRIERS BEFORE THEY REBUILD', 'BEAT BOSSES BEFORE THEY GO BERSERK',
+        'SIREN WAVES HAVE A SAFE GAP', 'CHAIN BOLTS JUMP BETWEEN NEARBY FOES',
+        'NEAR MISSES FEED THE GRAZE CAPACITOR'];
     text(tips[Math.floor(G.stateTime / 3) % tips.length], W / 2, 500, 8, Theme.halloween ? '#ffcc00' : rainbow(0));
     const themeName = Theme.halloween ? 'HALLOWEEN' : 'CLASSIC';
     const themeColor = Theme.halloween ? '#ff9933' : '#33ffff';
