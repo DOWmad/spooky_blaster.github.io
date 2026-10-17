@@ -265,6 +265,250 @@ function fightBoss(t, level) {
   return boss;
 }
 
+function restingNecromancer(t, opts = {}) {
+  const nec = new t.Enemy('necromancer', 240, 100, opts);
+  Object.assign(nec, {
+    y: 100,
+    mode: 'cast',
+    modeT: 0,
+    necromancerTime: 0,
+    ritualCooldown: 0,
+    dir: 0,
+  });
+  t.G.enemies.push(nec);
+  return nec;
+}
+
+function corpse(type, x, y, age, levelTime) {
+  return { type, x, y, t: levelTime - age };
+}
+
+test('necromancer waits for real corpses instead of summoning fallback grunts', async () => {
+  const t = await boot();
+  t.play();
+  const nec = restingNecromancer(t);
+  nec.update(0.01, t.G);
+  assert.equal(nec.maxHp, 30);
+  assert.equal(nec.mode, 'cast');
+  assert.equal(t.G.enemies.length, 1);
+});
+
+test('necromancer claims at most three nearby recent corpses in deterministic order', async () => {
+  const t = await boot();
+  t.play();
+  t.G.levelTime = 10;
+  const nec = restingNecromancer(t);
+  const far = corpse('grunt', 450, 100, 1, t.G.levelTime);
+  const old = corpse('swooper', 220, 100, 4, t.G.levelTime);
+  const newer = corpse('shooter', 260, 100, 2, t.G.levelTime);
+  const nearest = corpse('diver', 230, 100, 1, t.G.levelTime);
+  const stale = corpse('phantom', 240, 100, 9, t.G.levelTime);
+  t.G.corpses = [far, newer, stale, old, nearest];
+  nec.update(0.01, t.G);
+  assert.equal(nec.mode, 'ritual');
+  assert.deepEqual(nec.ritualTargets.map(c => c.type), ['diver', 'swooper', 'shooter']);
+  assert.deepEqual(t.G.corpses.map(c => c.type), ['grunt', 'phantom']);
+});
+
+test('necromancer ritual respects its six-minion ownership cap', async () => {
+  const t = await boot();
+  t.play();
+  t.G.levelTime = 10;
+  const nec = restingNecromancer(t);
+  for (let i = 0; i < 5; i++) t.G.enemies.push(new t.Enemy('grunt', 30 + i * 20, 200, { owner: nec }));
+  t.G.corpses = [
+    corpse('grunt', 220, 120, 1, t.G.levelTime),
+    corpse('shooter', 260, 120, 1, t.G.levelTime),
+  ];
+  nec.update(0.01, t.G);
+  assert.equal(nec.ritualTargets.length, 1);
+  nec.setMode('cast');
+  nec.ritualTargets = [];
+  t.G.enemies.push(new t.Enemy('grunt', 180, 200, { owner: nec }));
+  const remaining = t.G.corpses.length;
+  nec.update(0.01, t.G);
+  assert.equal(nec.mode, 'cast');
+  assert.equal(t.G.corpses.length, remaining);
+});
+
+test('necromancer completes a ritual with raised versions of the selected enemies', async () => {
+  const t = await boot();
+  t.play();
+  t.G.levelTime = 10;
+  const nec = restingNecromancer(t, { speedMul: 1.4 });
+  t.G.corpses = [corpse('shooter', 220, 140, 1, t.G.levelTime)];
+  nec.update(0.01, t.G);
+  nec.update(1.61, t.G);
+  const raised = t.G.enemies.find(e => e !== nec);
+  assert.ok(raised);
+  assert.equal(raised.type, 'shooter');
+  assert.equal(raised.raised, true);
+  assert.equal(raised.owner, nec);
+  assert.equal(raised.score, 150);
+  assert.equal(raised.drop, 0);
+  assert.equal(raised.speedMul, 1.4);
+  assert.equal(nec.ritualSuccesses, 1);
+  assert.equal(nec.mode, 'cast');
+});
+
+test('necromancer withdraws after two rituals or eighteen seconds', async () => {
+  const t = await boot();
+  t.play();
+  const afterTwo = restingNecromancer(t);
+  afterTwo.ritualSuccesses = 2;
+  afterTwo.update(0.01, t.G);
+  assert.equal(afterTwo.mode, 'leave');
+
+  const timedOut = restingNecromancer(t);
+  timedOut.necromancerTime = 18;
+  timedOut.update(0.01, t.G);
+  assert.equal(timedOut.mode, 'leave');
+});
+
+test('necromancer finishes an active ritual before leaving and escaped minions remain', async () => {
+  const t = await boot();
+  t.play();
+  const nec = restingNecromancer(t);
+  const existing = new t.Enemy('grunt', 100, 200, { raised: true, owner: nec });
+  t.G.enemies.push(existing);
+  Object.assign(nec, {
+    mode: 'ritual',
+    necromancerTime: 18,
+    ritualTime: 0.1,
+    ritualTargets: [{ type: 'grunt', x: 220, y: 140, t: 0 }],
+  });
+  nec.update(0.11, t.G);
+  assert.equal(nec.mode, 'cast');
+  assert.equal(nec.ritualSuccesses, 1);
+  nec.update(0.01, t.G);
+  assert.equal(nec.mode, 'leave');
+  assert.equal(existing.dead, false);
+});
+
+test('necromancer ritual scales its threshold and breaks on the twentieth damage', async () => {
+  const t = await boot();
+  t.play();
+  assert.equal(new t.Enemy('necromancer', 0, 0).ritualThreshold, 20);
+  assert.equal(new t.Enemy('necromancer', 0, 0, { hpBonus: 2 }).ritualThreshold, 24);
+  assert.equal(new t.Enemy('necromancer', 0, 0, { hpBonus: 99 }).ritualThreshold, 30);
+
+  const nec = restingNecromancer(t);
+  Object.assign(nec, {
+    mode: 'ritual', ritualTime: 1.6,
+    ritualTargets: [{ type: 'grunt', x: 220, y: 140, t: 0 }],
+  });
+  t.G.playerBullets.push(new t.Bullet(nec.x, nec.y, 0, 0, true, { dmg: 19 }));
+  t.run(0.02);
+  assert.equal(nec.mode, 'ritual');
+  assert.equal(nec.ritualDamage, 19);
+  assert.equal(nec.hp, 11);
+
+  t.G.playerBullets.push(new t.Bullet(nec.x, nec.y, 0, 0, true, { dmg: 1 }));
+  t.run(0.02);
+  assert.equal(nec.mode, 'stunned');
+  assert.equal(nec.ritualTargets.length, 0);
+  assert.equal(nec.ritualDamage, 0);
+  nec.update(0.9, t.G);
+  assert.equal(nec.mode, 'stunned');
+  nec.update(0.11, t.G);
+  assert.equal(nec.mode, 'cast');
+  assert.equal(nec.ritualCooldown, 3.5);
+});
+
+test('holy water contributes post-modifier damage to a necromancer ritual', async () => {
+  const t = await boot();
+  t.play();
+  const nec = restingNecromancer(t);
+  Object.assign(nec, {
+    mode: 'ritual', ritualTime: 1.6,
+    ritualTargets: [{ type: 'grunt', x: 220, y: 140, t: 0 }],
+  });
+  t.G.playerBullets.push(new t.Bullet(nec.x, nec.y, 0, 0, true, { dmg: 10, holy: true }));
+  t.run(0.02);
+  assert.equal(nec.mode, 'stunned');
+  assert.equal(nec.hp, 10);
+});
+
+test('killing a channeling necromancer cancels its ritual and crumbles its dead', async () => {
+  const t = await boot();
+  t.play();
+  const nec = restingNecromancer(t);
+  const raised = new t.Enemy('grunt', 100, 200, { raised: true, owner: nec });
+  t.G.enemies.push(raised);
+  Object.assign(nec, {
+    hp: 1, mode: 'ritual', ritualTime: 1.6,
+    ritualTargets: [{ type: 'shooter', x: 220, y: 140, t: 0 }],
+  });
+  t.G.playerBullets.push(new t.Bullet(nec.x, nec.y, 0, 0, true));
+  t.run(0.02);
+  assert.equal(nec.dead, true);
+  assert.equal(raised.dead, true);
+  assert.equal(nec.ritualTargets.length, 0);
+  assert.equal(t.G.enemies.some(e => e.type === 'shooter'), false);
+});
+
+test('ramming damage can break a necromancer ritual', async () => {
+  const t = await boot();
+  const p = t.play();
+  const nec = restingNecromancer(t);
+  Object.assign(nec, {
+    x: p.x, y: p.y, speed: 0, mode: 'ritual', ritualTime: 1.6, ritualDamage: 18,
+    ritualTargets: [{ type: 'grunt', x: 220, y: 140, t: 0 }],
+  });
+  p.invuln = 0;
+  p.shields = 1;
+  t.run(0.02);
+  assert.equal(nec.mode, 'stunned');
+  assert.equal(p.shields, 0);
+});
+
+test('black-cat spook pauses a ritual but still allows damage to interrupt it', async () => {
+  const t = await boot();
+  t.play();
+  const nec = restingNecromancer(t);
+  Object.assign(nec, {
+    mode: 'ritual', ritualTime: 1.6,
+    ritualTargets: [{ type: 'grunt', x: 220, y: 140, t: 0 }],
+  });
+  t.G.spook = 1;
+  t.run(0.5);
+  assert.equal(nec.ritualTime, 1.6);
+  t.G.playerBullets.push(new t.Bullet(nec.x, nec.y, 0, 0, true, { dmg: 20 }));
+  t.run(0.02);
+  assert.equal(nec.mode, 'stunned');
+});
+
+test('pausing freezes necromancer ritual and withdrawal timers', async () => {
+  const t = await boot();
+  t.play();
+  const nec = restingNecromancer(t);
+  Object.assign(nec, {
+    mode: 'ritual', ritualTime: 1.2, necromancerTime: 4,
+    ritualTargets: [{ type: 'grunt', x: 220, y: 140, t: 0 }],
+  });
+  t.G.paused = true;
+  t.run(0.5);
+  assert.equal(nec.ritualTime, 1.2);
+  assert.equal(nec.necromancerTime, 4);
+});
+
+test('necromancer ritual and stun states draw with themed silhouette layers', async () => {
+  const t = await boot();
+  t.play();
+  const layers = vm.runInContext("Sprites.get('grunt')", t.context);
+  assert.ok(layers.revive);
+  assert.ok(layers.repair);
+  const nec = new t.Enemy('necromancer', 240, 100);
+  Object.assign(nec, {
+    mode: 'ritual', ritualTime: 1, ritualDamage: 4,
+    ritualTargets: [{ type: 'grunt', x: 200, y: 200 }],
+  });
+  nec.draw(blob, 1);
+  nec.setMode('stunned');
+  nec.draw(blob, 1.1);
+  assert.deepEqual(t.errors, []);
+});
+
 test('each campaign level has its own boss, and the order repeats each loop', async () => {
   const t = await boot();
   const names = [1, 2, 3, 4, 5, 6, 10, 11].map(n => new t.Boss(n, n % 6 === 0).def.hname);

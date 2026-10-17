@@ -506,13 +506,19 @@ const Sprites = (() => {
     const img = document.createElement('canvas');
     const flash = document.createElement('canvas');
     const gold = document.createElement('canvas');
-    img.width = flash.width = gold.width = w * scale;
-    img.height = flash.height = gold.height = h * scale;
+    const revive = document.createElement('canvas');
+    const repair = document.createElement('canvas');
+    img.width = flash.width = gold.width = revive.width = repair.width = w * scale;
+    img.height = flash.height = gold.height = revive.height = repair.height = h * scale;
     const ic = img.getContext('2d');
     const fc = flash.getContext('2d');
     const gc = gold.getContext('2d');
+    const rc = revive.getContext('2d');
+    const pc = repair.getContext('2d');
     fc.fillStyle = '#ffffff';
     gc.fillStyle = '#ffcc00';
+    rc.fillStyle = '#66ff66';
+    pc.fillStyle = '#33ffff';
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < rows[y].length; x++) {
         const ch = rows[y][x];
@@ -521,9 +527,11 @@ const Sprites = (() => {
         ic.fillRect(x * scale, y * scale, scale, scale);
         fc.fillRect(x * scale, y * scale, scale, scale);
         gc.fillRect(x * scale, y * scale, scale, scale);
+        rc.fillRect(x * scale, y * scale, scale, scale);
+        pc.fillRect(x * scale, y * scale, scale, scale);
       }
     }
-    return { img, flash, gold, w: img.width, h: img.height };
+    return { img, flash, gold, revive, repair, w: img.width, h: img.height };
   }
 
   function init() {

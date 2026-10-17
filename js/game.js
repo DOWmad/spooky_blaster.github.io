@@ -214,28 +214,55 @@
     Sound.sfx.curse();
   }
 
-  // Necromancer: raise recent remains nearby, or summon fresh minions. Max 6 of its own alive.
-  G.raiseDead = nec => {
+  // Reserve recent remains for an interruptible necromancer ritual.
+  G.startNecromancerRitual = nec => {
     const own = G.enemies.filter(e => e.owner === nec && !e.dead).length;
-    const budget = Math.min(2, 6 - own);
-    if (budget <= 0) return;
-    const fresh = G.corpses.filter(c => G.levelTime - c.t < 6 && Math.hypot(c.x - nec.x, c.y - nec.y) < 260);
-    const spots = fresh.slice(0, budget);
-    G.corpses = G.corpses.filter(c => !spots.includes(c));
-    while (spots.length < budget) {
-      spots.push({ type: 'grunt', x: clamp(nec.x + (spots.length % 2 ? 40 : -40), 20, W - 20), y: nec.y + 20 });
-    }
-    for (const c of spots) {
-      const e = new Enemy(c.type, c.x, c.y, { raised: true, owner: nec, speedMul: nec.speedMul });
-      e.stopY = Math.max(e.stopY, c.y);
-      G.enemies.push(e);
+    const budget = Math.min(NECROMANCER_RITUAL.maxTargets, NECROMANCER_RITUAL.maxOwned - own);
+    if (budget <= 0) return false;
+    const targets = G.corpses
+      .filter(c => G.levelTime - c.t <= NECROMANCER_RITUAL.corpseAge
+        && Math.hypot(c.x - nec.x, c.y - nec.y) <= NECROMANCER_RITUAL.range)
+      .sort((a, b) => Math.hypot(a.x - nec.x, a.y - nec.y) - Math.hypot(b.x - nec.x, b.y - nec.y)
+        || a.t - b.t)
+      .slice(0, budget);
+    if (!targets.length) return false;
+    const selected = new Set(targets);
+    G.corpses = G.corpses.filter(c => !selected.has(c));
+    nec.ritualTargets = targets.map(c => ({ ...c }));
+    nec.ritualTime = NECROMANCER_RITUAL.channel;
+    nec.ritualDamage = 0;
+    nec.setMode('ritual');
+    return true;
+  };
+
+  G.completeNecromancerRitual = nec => {
+    for (const c of nec.ritualTargets) {
+      const raised = new Enemy(c.type, c.x, c.y, { raised: true, owner: nec, speedMul: nec.speedMul });
+      raised.stopY = Math.max(raised.stopY, c.y);
+      G.enemies.push(raised);
       for (let i = 0; i < 8; i++) {
         G.particles.push({ x: c.x + rand(-10, 10), y: c.y + 10, vx: 0, vy: rand(-140, -60),
           life: 0.6, max: 0.6, color: '#66ff66', size: 3 });
       }
     }
+    nec.ritualTargets = [];
+    nec.ritualDamage = 0;
+    nec.ritualSuccesses++;
+    nec.ritualCooldown = NECROMANCER_RITUAL.cooldown;
+    nec.setMode('cast');
     popup(Theme.halloween ? 'RISE!' : 'REBUILD!', nec.x, nec.y - 26, '#66ff66');
     Sound.sfx.raise();
+  };
+
+  G.breakNecromancerRitual = nec => {
+    if (nec.mode !== 'ritual') return;
+    nec.ritualTargets = [];
+    nec.ritualDamage = 0;
+    nec.stunTime = NECROMANCER_RITUAL.stun;
+    nec.setMode('stunned');
+    const color = Theme.halloween ? '#66ff66' : '#33ffff';
+    shockwave(nec.x, nec.y, 70, color, 0.35, 4);
+    popup(Theme.halloween ? 'RITUAL BROKEN' : 'REBUILD FAILED', nec.x, nec.y - 32, color);
   };
 
   function popup(text, x, y, color = '#ffffff') {
@@ -453,10 +480,14 @@
   // Damage an enemy or asteroid; `quiet` skips the hit blip for continuous damage
   function hitTarget(o, dmg, quiet = false) {
     if (o.dead || o.intangible) return;
-    if (o.hit(dmg)) {
+    const killed = o.hit(dmg);
+    if (killed) {
       if (o instanceof Asteroid) killAsteroid(o); else killEnemy(o);
-    } else if (!quiet) {
-      Sound.sfx.hit();
+    } else {
+      if (o.type === 'necromancer' && o.mode === 'ritual' && o.ritualDamage >= o.ritualThreshold) {
+        G.breakNecromancerRitual(o);
+      }
+      if (!quiet) Sound.sfx.hit();
     }
   }
 
@@ -480,6 +511,7 @@
 
   function killEnemy(e) {
     e.dead = true;
+    e.ritualTargets = [];
     scoreKill(e.score, e.x, e.y);
     enemyDeathFx(e);
     if (REVIVABLE.has(e.type) && !e.raised) {
@@ -962,7 +994,7 @@
       if (!e.dead && !e.intangible && dist2(e, p) < (e.r * 0.8 + p.r) ** 2) {
         const exposed = p.invuln <= 0 && G.ultTime <= 0;
         damagePlayer();
-        if (exposed && e.hit(3)) killEnemy(e);
+        if (exposed) hitTarget(e, 3);
         if (!p.alive) return;
       }
     }
