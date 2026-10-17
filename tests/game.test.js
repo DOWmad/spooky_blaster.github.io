@@ -543,12 +543,16 @@ test('a game asks for a run token, and saving initials submits the score with it
 });
 
 test('offline at the start: saving initials skips the world submit and saves locally', async () => {
-  const t = await boot();
+  // start fails but submit would succeed: only a working "no token, no submit" guard yields 'failed'
+  const server = fakeServer({ start: [503, {}], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch });
   reachInitials(t);
+  await t.flush();
   t.key('keydown', 'Enter');
   t.run(1 / 60);
   await t.flush();
   assert.equal(t.G.worldRank, 'failed');
+  assert.equal(server.calls.filter(c => c.action === 'submit').length, 0, 'no submit without a run token');
   assert.equal(vm.runInContext('Leaderboard.all()[0].score', t.context), 999999);
 });
 

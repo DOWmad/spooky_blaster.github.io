@@ -39,7 +39,8 @@ test('start accepts only an empty object', async () => {
 test('plausibility limits', async () => {
   const { plausible } = await load();
   assert.equal(plausible({ score: 1000, level: 1 }, 10), true);
-  assert.equal(plausible({ score: 250001, level: 1 }, 10000), false, 'too many points for the level');
+  assert.equal(plausible({ score: 256001, level: 1 }, 10000), false, 'too many points for the level (250000·L + 6000·L²)');
+  assert.equal(plausible({ score: 256000, level: 1 }, 10000), true);
   assert.equal(plausible({ score: 50001, level: 1 }, 10), false, 'too many points per second');
   assert.equal(plausible({ score: 1000, level: 5 }, 79), false, 'cleared 4 levels in under 80 s');
   assert.equal(plausible({ score: 1000, level: 5 }, 80), true);
@@ -86,4 +87,30 @@ test('IP hashes are salted SHA-256 hex', async () => {
   assert.equal(await ipHash('203.0.113.9', 'salt1'), a);
   assert.notEqual(await ipHash('203.0.113.9', 'salt2'), a);
   assert.notEqual(await ipHash('203.0.113.8', 'salt1'), a);
+});
+
+test('IPv6 clients are grouped by their /64, so rotating addresses inside it share one budget', async () => {
+  const { clientIp } = await load();
+  const a = clientIp(new Headers({ 'cf-connecting-ip': '2001:db8:abcd:12:1:2:3:4' }));
+  const b = clientIp(new Headers({ 'cf-connecting-ip': '2001:DB8:ABCD:0012:ffff::9' }));
+  assert.equal(a, '2001:db8:abcd:12::/64');
+  assert.equal(b, a);
+  assert.equal(clientIp(new Headers({ 'cf-connecting-ip': '2001:db8::1' })), '2001:db8:0:0::/64');
+  assert.notEqual(clientIp(new Headers({ 'cf-connecting-ip': '2001:db8:abcd:13::1' })), a);
+  assert.equal(clientIp(new Headers({ 'cf-connecting-ip': '203.0.113.9' })), '203.0.113.9', 'IPv4 unchanged');
+});
+
+test('starts are refused past a global hourly ceiling, whatever the per-IP count', async () => {
+  const { startVerdict, LIMITS } = await load();
+  assert.equal(startVerdict({ mine: 0, everyone: 0 }, 1), 'ok');
+  assert.equal(startVerdict({ mine: LIMITS.startsPerHour, everyone: 10 }, 1), 'rate_limited');
+  assert.equal(startVerdict({ mine: LIMITS.startsPerHour, everyone: 10 }, LIMITS.unknownIpFactor), 'ok');
+  assert.equal(startVerdict({ mine: 0, everyone: LIMITS.globalStartsPerHour }, 1), 'rate_limited');
+});
+
+test('the score cap keeps up with the game, whose bonuses grow with the square of the level', async () => {
+  const { plausible } = await load();
+  // Level 30 (loop 5): per-level clear/perfect/boss bonuses alone are ~11000*L, so ~5M cumulative
+  assert.equal(plausible({ score: 8000000, level: 30 }, 3000), true, 'a strong level-30 run is accepted');
+  assert.equal(plausible({ score: 30000000, level: 30 }, 100000), false, 'far beyond anything reachable at level 30');
 });

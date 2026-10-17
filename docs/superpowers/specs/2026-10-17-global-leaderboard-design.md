@@ -63,7 +63,7 @@ create index leaderboard_runs_started_at_idx on public.leaderboard_runs (started
 
 create table public.leaderboard_scores (
   id         bigint generated always as identity primary key,
-  name       text not null check (name ~ '^[A-Z0-9 ]{1,3}$' and btrim(name) <> ''),
+  name       text not null check (name ~ '^[A-Z0-9 ?]{1,3}$' and btrim(name) <> ''),
   score      integer not null check (score between 1 and 100000000),
   level      integer not null check (level between 1 and 1000),
   duration_s integer not null check (duration_s >= 0),   -- server-measured play time
@@ -92,11 +92,11 @@ Notes:
 1. **One-time run tokens.** `start` creates a run and returns its token. `submit` consumes it atomically: `update runs set used_at = now() where token = $1 and used_at is null and started_at > now() - interval '3 hours' returning started_at`. No row means the token is unknown, already used or expired, and the request is rejected.
 2. **Server-measured play time.** `duration_s = now() - started_at`, from the database clock. The client never sends a duration.
 3. **Plausibility limits.** All limits live in one constants block in the function, deliberately generous at launch and tightened once real scores exist:
-   - `score <= 250000 * level` (most points a level can realistically yield, with headroom)
+   - `score <= 250000 * level + 6000 * level²` (level bonuses grow with the level, so totals grow roughly with its square)
    - `score <= 5000 * duration_s` (points per second)
    - `duration_s >= 20 * (level - 1)` (no level clears faster than about 20 s)
-4. **Input validation.** `name` is 1 to 3 characters from `A-Z`, `0-9` and space, not all spaces. `score` and `level` are integers within the table limits. Anything else gets 400.
-5. **Rate limits, per salted IP hash.** Up to 30 `start` calls and 10 accepted submissions per hour. Over the limit gets 429. The hash uses SHA-256 with a secret salt stored as the Edge Function secret `LEADERBOARD_IP_SALT`. Raw IPs are never stored or logged. Which request header carries the real client IP on Supabase Edge Functions will be confirmed against current docs during implementation; if no trustworthy header exists, the rate limit falls back to a global per-minute cap.
+4. **Input validation.** `name` is 1 to 3 characters from `A-Z`, `0-9`, space and `?` (the game saves blank initials as `???`), not all spaces. `score` and `level` are integers within the table limits. Anything else gets 400.
+5. **Rate limits, per salted IP hash** (IPv6 grouped by /64; client IP from Cloudflare's `cf-connecting-ip`). Up to 30 `start` calls and 10 accepted submissions per hour, plus a global ceiling of 3000 starts per hour for everyone combined. Over the limit gets 429. The hash uses SHA-256 with a secret salt stored as the Edge Function secret `LEADERBOARD_IP_SALT`. Raw IPs are never stored or logged. Which request header carries the real client IP on Supabase Edge Functions will be confirmed against current docs during implementation; if no trustworthy header exists, the rate limit falls back to a global per-minute cap.
 6. **Housekeeping.** `start` also deletes runs older than 24 hours (an indexed range delete), so no cron extension is needed.
 7. **Moderation.** The owner deletes bad rows in the Supabase dashboard's Table Editor (`scores`). No admin endpoint.
 

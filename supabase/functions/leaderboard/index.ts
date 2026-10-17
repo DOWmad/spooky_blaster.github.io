@@ -4,7 +4,7 @@
 // All database access uses ctx.supabaseAdmin (secret key, server-side only).
 import { withSupabase } from '@supabase/server';
 import {
-  LIMITS, clientIp, corsHeaders, ipHash, parseStart, parseSubmission, plausible, route,
+  LIMITS, clientIp, corsHeaders, ipHash, parseStart, parseSubmission, plausible, route, startVerdict,
 } from './rules.mjs';
 
 const SALT = Deno.env.get('LEADERBOARD_IP_SALT') ?? '';
@@ -50,11 +50,16 @@ const api = withSupabase({ auth: 'publishable', cors: 'disabled' }, async (req, 
 
   if (action === 'start') {
     if (!parseStart(body)) return rejected();
-    const { count, error: countError } = await db.from('leaderboard_runs')
-      .select('token', { count: 'exact', head: true })
-      .eq('ip_hash', hash).gte('started_at', since(60 * 60 * 1000));
-    if (countError) throw countError;
-    if ((count ?? 0) >= LIMITS.startsPerHour * budget) return json(429, { error: 'rate_limited' });
+    const hourAgo = since(60 * 60 * 1000);
+    const [mine, everyone] = await Promise.all([
+      db.from('leaderboard_runs').select('token', { count: 'exact', head: true }).eq('ip_hash', hash).gte('started_at', hourAgo),
+      db.from('leaderboard_runs').select('token', { count: 'exact', head: true }).gte('started_at', hourAgo),
+    ]);
+    if (mine.error) throw mine.error;
+    if (everyone.error) throw everyone.error;
+    if (startVerdict({ mine: mine.count ?? 0, everyone: everyone.count ?? 0 }, budget) !== 'ok') {
+      return json(429, { error: 'rate_limited' });
+    }
     const { error: purgeError } = await db.from('leaderboard_runs').delete().lt('started_at', since(24 * 60 * 60 * 1000));
     if (purgeError) throw purgeError;
     const { data, error } = await db.from('leaderboard_runs').insert({ ip_hash: hash }).select('token').single();
