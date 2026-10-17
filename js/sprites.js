@@ -196,17 +196,6 @@ const Sprites = (() => {
       '...PPPPP...',
       '..P.P.P.P..',
     ] },
-    werewolf: { scale: 3, rows: [  // classic: alien prowler
-      '..P.......P..',
-      '.PPP.....PPP.',
-      '.PPPPPPPPPPP.',
-      'PPYPPPPPPPYPP',
-      'PPPPPPPPPPPPP',
-      '.PPWPWPWPWPP.',
-      '..PPPPPPPPP..',
-      '.PP..PPP..PP.',
-      'PP...P.P...PP',
-    ] },
     necromancer: { scale: 3, rows: [  // classic: carrier that rebuilds wrecks
       '...MMMMMMMMM...',
       '.MMMMMMMMMMMMM.',
@@ -369,18 +358,6 @@ const Sprites = (() => {
       '.WWWWWWWWW.',
       '.W.WW.WW.W.',
     ] },
-    h_werewolf: { scale: 3, rows: [
-      '.F.........F.',
-      '.FF.......FF.',
-      '.FFFFFFFFFFF.',
-      'FFFYFFFFFYFFF',
-      'FFFFFFFFFFFFF',
-      '.FFFWFKFWFFF.',
-      '..FFFFFFFFF..',
-      '.FF.FFFFF.FF.',
-      'FF..FF.FF..FF',
-      'F...F...F...F',
-    ] },
     h_necromancer: { scale: 3, rows: [
       'L....EEE.....',
       'LL..EEEEE....',
@@ -473,7 +450,47 @@ const Sprites = (() => {
       '.EEEEEEEEEEEEEEEEEE.',
       'E..E..E..EE..E..E..E',
     ] },
+    h_boss4: { scale: 5, rows: mirror([   // Werewolf
+      '.F........',
+      '.FF.......',
+      '.FFF......',
+      '.FFFF.FFFF',
+      '..FFFFFFFF',
+      '..FFFFFFFF',
+      '.FFFYYFFFF',
+      'FFFFYKFFFF',
+      'FFFFFFFFFF',
+      '.FFFFFFAAA',
+      '..FFFFAAKK',
+      '..FFFAKWKW',
+      '...FFAKKKK',
+      '....FFAAAA',
+      '.F...FFFFF',
+      'FF....FFFF',
+    ]) },
+    h_boss5: { scale: 5, rows: mirror([   // Frankenstein's monster
+      '...KKKKKKK',
+      '..KKKKKKKK',
+      '..KKKKKKKK',
+      '..ZZZZZZZZ',
+      '..ZZZZZKZZ',
+      '..ZZZZKZKZ',
+      'AAZZKKKZZZ',
+      'AAZZWYZZZZ',
+      '..ZZZZZZZZ',
+      '..ZZZZZZZZ',
+      '..ZZKKKKKK',
+      '..ZZZZZZZZ',
+      '...ZZZZZZZ',
+      '.EEEEEEEEE',
+      'EEEEEEEEEE',
+      'EE.EEEEEEE',
+    ]) },
   };
+
+  // Classic versions of the newer bosses: an alpha prowler and a stone golem
+  ART.boss4 = { scale: 5, rows: recolor(ART.h_boss4.rows, { F: 'P', A: 'M' }) };
+  ART.boss5 = { scale: 5, rows: recolor(ART.h_boss5.rows, { Z: 'M', K: 'F', E: 'A', A: 'C' }) };
 
   // Halloween ship classes are recolors of the classic hulls
   const PUMPKIN_SHIP = { W: 'O', C: 'L', B: 'K', R: 'V', Y: 'N' };

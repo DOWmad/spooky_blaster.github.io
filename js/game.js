@@ -111,7 +111,10 @@
     const p = G.player;
     G.treats--;
     G.spook = 5;
-    if (G.boss) Object.assign(G.boss, { queue: [], spiral: null, laser: null, stun: G.spook });
+    if (G.boss) {
+      G.boss.cancelAttacks();
+      G.boss.stun = G.spook;
+    }
     G.powerups.push(new PowerUp(cat.x, p.y - 60, randomPowerupKind()));
     cat.mode = 'flee';
     explode(cat.x, cat.y, ['#ff99cc', '#ffee33', '#ffffff'], 12, 100);
@@ -324,8 +327,7 @@
     if (ev.kind === 'enemy') {
       // Now and then a regular enemy rolls as a tougher, richer elite
       const elite = ELITE_TYPES.includes(ev.type) && Math.random() < 0.05 + 0.01 * Math.min(G.level, 10);
-      const fullMoon = ev.type === 'werewolf' && Theme.halloween && currentScene() === 3; // blood moon level
-      G.enemies.push(new Enemy(ev.type, ev.x, -20, elite || fullMoon ? { ...ev.opts, elite, fullMoon } : ev.opts));
+      G.enemies.push(new Enemy(ev.type, ev.x, -20, elite ? { ...ev.opts, elite } : ev.opts));
     } else {
       G.asteroids.push(new Asteroid(ev.x, -40, ev.size, ev.vx, ev.vy));
     }
@@ -482,12 +484,15 @@
     return UNDEAD.has(o.type) || o.type === 'necromancer' ? 2 : 1;
   }
 
-  // Silver slays werewolves (x3) and wounds them so they can't regenerate for a while
+  // Silver hurts the werewolf (x2) and wounds it so it can't regenerate for a while
   function silverMult(o) {
-    if (!Theme.halloween || o.type !== 'werewolf') return 1;
+    if (!Theme.halloween || o !== G.boss || o.def.fears !== 'silver') return 1;
     o.silverT = 2;
-    return 3;
+    return 2;
   }
+
+  // Frankenstein's monster fears fire: rockets hit it twice as hard
+  const fireMult = o => (Theme.halloween && o === G.boss && o.def.fears === 'fire' ? 2 : 1);
 
   // Garlic: vampires and bats recoil from the aura and take damage inside it
   function updateGarlic(dt) {
@@ -540,7 +545,23 @@
     b.hp -= dmg;
     b.flash = 0.05;
     chargeUltimate(dmg * 0.1);
-    if (b.hp <= 0) bossKilled();
+    if (b.hp > 0) return;
+    if (b.def.revives && !b.revived) reviveBoss(); else bossKilled();
+  }
+
+  // IT'S ALIVE! The monster is jolted back to life once, at 30% and angrier
+  function reviveBoss() {
+    const b = G.boss;
+    b.revived = true;
+    b.hp = b.maxHp * 0.3;
+    b.cancelAttacks();
+    b.stun = 1.5;
+    G.enemyBullets = [];
+    G.flash = 0.8;
+    G.shake = 12;
+    shockwave(b.x, b.y, 180, '#ccddff', 0.5, 5);
+    popup(Theme.halloween ? "IT'S ALIVE!" : 'REBOOTING!', W / 2, H / 2 - 40, '#ccddff');
+    Sound.sfx.bigExplode();
   }
 
   function bossKilled() {
@@ -705,21 +726,37 @@
     Sound.sfx.powerup();
   }
 
+  // ---------- touch targets (drawn on the canvas in touch mode) ----------
+
+  const PAUSE_BTN = { x: W - 26, y: 104, r: 20 };
+  const ULT_BTN = { x: W - 46, y: H - 112, r: 30 };
+  const SAVE_BTN = { x: W / 2, y: 475, r: 32 }; // clear of the '-' row under the letters
+  const NAME_Y = 350;
+  const nameX = i => W / 2 + (i - 1) * 60;
+  const THEME_LINE_Y = 562;
+  const tapped = () => Input.taps().length > 0;
+  // Generous hit circles: fingers are bigger than the drawn buttons
+  const tapOn = b => Input.taps().find(t => Math.hypot(t.x - b.x, t.y - b.y) < b.r + 10);
+  // The title screen alternates with the high-score table every 9 seconds
+  const titleShowsTable = () => Math.floor(G.stateTime / 9) % 2 === 1;
+
   // ---------- per-state updates ----------
 
   function updateTitle() {
-    if (Input.wasPressed('KeyT')) {
+    const themeTap = !titleShowsTable() && Input.taps().find(t => Math.abs(t.y - THEME_LINE_Y) < 14);
+    if (Input.wasPressed('KeyT') || themeTap) {
       Theme.toggle();
       Sound.sfx.select();
-    }
-    if (Input.wasPressed('Enter', 'Space')) {
+    } else if (Input.wasPressed('Enter', 'Space') || tapped()) {
       Sound.sfx.confirm();
       newGame();
     }
   }
 
   function updatePlaying(dt) {
-    if (Input.wasPressed('KeyP', 'Escape')) G.paused = !G.paused;
+    const pauseTap = G.paused ? Input.taps()[0] : tapOn(PAUSE_BTN);
+    if (pauseTap) Input.release(pauseTap.id);
+    if (Input.wasPressed('KeyP', 'Escape') || pauseTap) G.paused = !G.paused;
     if (G.paused) return;
 
     G.levelTime += dt;
@@ -780,7 +817,9 @@
     }
 
     const p = G.player;
-    if (p.alive && G.ultCharge >= 100 && Input.wasPressed('KeyE', 'ShiftLeft', 'ShiftRight')) activateUltimate();
+    const ultTap = tapOn(ULT_BTN);
+    if (ultTap) Input.release(ultTap.id);
+    if (p.alive && G.ultCharge >= 100 && (Input.wasPressed('KeyE', 'ShiftLeft', 'ShiftRight') || ultTap)) activateUltimate();
     if (G.ultTime > 0) updateUltimate(dt);
     updateGarlic(dt);
     updateLaser(dt);
@@ -842,7 +881,7 @@
       if (!target && boss && boss.state === 'fight' && !boss.dead && boss.hitTest(b.x, b.y)) target = boss;
       if (!target) continue;
       b.dead = true;
-      const mult = (b.holy ? holyMult(target) : 1) * (b.silver ? silverMult(target) : 1);
+      const mult = (b.holy ? holyMult(target) : 1) * (b.silver ? silverMult(target) : 1) * (b instanceof Rocket ? fireMult(target) : 1);
       if (mult > 1) explode(b.x, b.y, b.silver ? ['#e8eef8', '#ffffff'] : ['#66ccff', '#ffffff'], 4, 80);
       if (target === boss) {
         damageBoss(b.dmg * mult);
@@ -918,7 +957,7 @@
   }
 
   function updateGameOver() {
-    if (G.stateTime >= 3 || (G.stateTime > 1 && Input.wasPressed('Enter'))) {
+    if (G.stateTime >= 3 || (G.stateTime > 1 && (Input.wasPressed('Enter') || tapped()))) {
       if (Leaderboard.qualifies(G.score)) {
         G.name = [0, 0, 0];
         G.namePos = 0;
@@ -931,10 +970,21 @@
 
   function updateEnterName() {
     const n = CHARS.length;
-    if (Input.wasPressed('ArrowUp')) {
+    // Touch: tap a letter to pick it, above it to go forward, below it to go back
+    let up = Input.wasPressed('ArrowUp');
+    let dn = Input.wasPressed('ArrowDown');
+    for (const t of Input.taps()) {
+      const i = [0, 1, 2].find(k => Math.abs(t.x - nameX(k)) < 30);
+      if (i === undefined || Math.abs(t.y - NAME_Y) > 70) continue;
+      G.namePos = i;
+      if (t.y < NAME_Y - 22) up = true;
+      else if (t.y > NAME_Y + 22) dn = true;
+      else Sound.sfx.select();
+    }
+    if (up) {
       G.name[G.namePos] = (G.name[G.namePos] + 1) % n; Sound.sfx.select();
     }
-    if (Input.wasPressed('ArrowDown')) {
+    if (dn) {
       G.name[G.namePos] = (G.name[G.namePos] - 1 + n) % n; Sound.sfx.select();
     }
     if (Input.wasPressed('ArrowLeft', 'Backspace')) { G.namePos = Math.max(0, G.namePos - 1); Sound.sfx.select(); }
@@ -947,7 +997,7 @@
         Sound.sfx.select();
       }
     }
-    if (Input.wasPressed('Enter')) {
+    if (Input.wasPressed('Enter') || tapOn(SAVE_BTN)) {
       const name = G.name.map(i => CHARS[i]).join('').trim() || '???';
       G.lastRank = Leaderboard.add(name, G.score, G.level);
       Sound.sfx.confirm();
@@ -956,7 +1006,7 @@
   }
 
   function updateLeaderboard() {
-    if (G.stateTime > 0.5 && Input.wasPressed('Enter', 'Space')) {
+    if (G.stateTime > 0.5 && (Input.wasPressed('Enter', 'Space') || tapped())) {
       Sound.sfx.confirm();
       setState('title');
     }
@@ -1039,10 +1089,10 @@
   const pad = (n, len = 6) => String(n).padStart(len, '0');
   const ENEMY_NAMES = {
     classic: { grunt: 'GRUNT', swooper: 'SWOOPER', shooter: 'GUNNER', tank: 'TANK',
-      diver: 'DIVER', splitter: 'SPLITTER', minelayer: 'MINER', phantom: 'PHANTOM', werewolf: 'PROWLER',
+      diver: 'DIVER', splitter: 'SPLITTER', minelayer: 'MINER', phantom: 'PHANTOM',
       necromancer: 'CARRIER' },
     halloween: { grunt: 'GHOUL', swooper: 'BAT', shooter: 'WARLOCK', tank: 'TROLL',
-      diver: 'VAMPIRE', splitter: 'SPIDER', minelayer: 'WITCH', phantom: 'GHOST', werewolf: 'WEREWOLF',
+      diver: 'VAMPIRE', splitter: 'SPIDER', minelayer: 'WITCH', phantom: 'GHOST',
       necromancer: 'NECROMANCER' },
   };
   const blink = (rate = 2) => Math.floor(G.t * rate * 2) % 2 === 0;
@@ -1190,7 +1240,8 @@
     ctx.fillStyle = G.ultTime > 0 ? '#ffffff' : ready ? rainbow(0) : '#ff44dd';
     ctx.fillRect(ux, uy, uw * (G.ultTime > 0 ? G.ultTime / 4 : G.ultCharge / 100), 7);
     if (p.power < MAX_POWER && G.ultTime <= 0) text('MAX PWR', ux + uw / 2, uy + 4, 6, '#666666');
-    if (ready && blink(3)) text(`PRESS E FOR ${Theme.halloween ? 'SUNBEAM' : 'ULTIMATE'}`, W / 2, H - 70, 10, '#ffffff');
+    if (ready && blink(3)) text(`${Input.touch ? 'TAP ULT' : 'PRESS E'} FOR ${Theme.halloween ? 'SUNBEAM' : 'ULTIMATE'}`, W / 2, H - 70, 10, '#ffffff');
+    if (Input.touch) drawTouchButtons(ready);
 
     // Boss health
     const b = G.boss;
@@ -1219,6 +1270,28 @@
     }
   }
 
+  function drawButton(b, color, alpha) {
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  function drawTouchButtons(ultReady) {
+    drawButton(PAUSE_BTN, '#ffffff', 0.5);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(PAUSE_BTN.x - 6, PAUSE_BTN.y - 7, 4, 14);
+    ctx.fillRect(PAUSE_BTN.x + 2, PAUSE_BTN.y - 7, 4, 14);
+    drawButton(ULT_BTN, ultReady ? rainbow(0) : '#666666', ultReady ? 0.9 : 0.4);
+    ctx.globalAlpha = ultReady ? 1 : 0.4;
+    text('ULT', ULT_BTN.x + 1, ULT_BTN.y + 1, 10, ultReady ? '#ffffff' : '#888888');
+    ctx.globalAlpha = 1;
+  }
+
   function drawPlayingOverlays() {
     if (G.bannerTime > 0) {
       const loop = loopOf(G.level);
@@ -1237,14 +1310,15 @@
       ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
       ctx.fillRect(0, 0, W, H);
       text('PAUSED', W / 2, H / 2 - 10, 24, '#ffffff');
-      text('P TO RESUME', W / 2, H / 2 + 24, 10, '#aaaaaa');
+      text(Input.touch ? 'TAP TO RESUME' : 'P TO RESUME', W / 2, H / 2 + 24, 10, '#aaaaaa');
     }
   }
 
   function drawTitle() {
-    if (Math.floor(G.stateTime / 9) % 2 === 1) {
+    const play = Input.touch ? 'TAP TO PLAY' : 'PRESS ENTER TO PLAY';
+    if (titleShowsTable()) {
       drawLeaderboardTable('HIGH SCORES');
-      if (blink(1.5)) text('PRESS ENTER TO PLAY', W / 2, H - 50, 12, '#ffffff');
+      if (blink(1.5)) text(play, W / 2, H - 50, 12, '#ffffff');
       return;
     }
     if (Theme.halloween) {
@@ -1280,17 +1354,25 @@
     const tips = Theme.halloween
       ? ['MAX POWER KILLS CHARGE THE SUNBEAM', 'GARLIC REPELS VAMPIRES AND BATS', 'HOLY WATER BURNS THE UNDEAD',
         'SUNLIGHT TURNS TROLLS TO STONE', 'WATER MELTS WITCHES', 'SILVER BULLETS SLAY WEREWOLVES',
-        'WEREWOLVES RAGE UNDER THE BLOOD MOON', 'HOLY CROSSES RETURN TO YOUR HAND',
+        'THE MONSTER FEARS FIRE - USE ROCKETS', 'HOLY CROSSES RETURN TO YOUR HAND',
         'SLAY THE NECROMANCER AND HIS DEAD CRUMBLE', 'BEAT BOSSES BEFORE THEY GO BERSERK',
         'WITCHES CURSE YOU - HOLY WATER PROTECTS', 'NEVER LET A BLACK CAT CROSS YOUR PATH',
         'A TREAT TURNS A BLACK CAT INTO GOOD LUCK']
       : ['MAX POWER KILLS CHARGE THE ULTIMATE', 'LASERS PIERCE EVERYTHING IN THEIR PATH',
         'DESTROY CARRIERS BEFORE THEY REBUILD', 'BEAT BOSSES BEFORE THEY GO BERSERK'];
     text(tips[Math.floor(G.stateTime / 3) % tips.length], W / 2, 500, 8, Theme.halloween ? '#ffcc00' : rainbow(0));
-    text('ARROWS/WASD MOVE  SPACE FIRE', W / 2, 522, 8, '#aaaaaa');
-    text('E ULTIMATE P PAUSE M MUTE N MUSIC', W / 2, 542, 8, '#aaaaaa');
-    text(`T THEME: ${Theme.halloween ? 'HALLOWEEN' : 'CLASSIC'}`, W / 2, 562, 8, Theme.halloween ? '#ff9933' : '#33ffff');
-    if (blink(1.5)) text('PRESS ENTER TO PLAY', W / 2, 594, 12, '#ffffff');
+    const themeName = Theme.halloween ? 'HALLOWEEN' : 'CLASSIC';
+    const themeColor = Theme.halloween ? '#ff9933' : '#33ffff';
+    if (Input.touch) {
+      text('DRAG TO MOVE - AUTO FIRE', W / 2, 522, 8, '#aaaaaa');
+      text('BUTTONS: ULT (BOTTOM) PAUSE (TOP)', W / 2, 542, 8, '#aaaaaa');
+      text(`THEME: ${themeName} (TAP TO CHANGE)`, W / 2, THEME_LINE_Y, 8, themeColor);
+    } else {
+      text('ARROWS/WASD MOVE  SPACE FIRE', W / 2, 522, 8, '#aaaaaa');
+      text('E ULTIMATE P PAUSE M MUTE N MUSIC', W / 2, 542, 8, '#aaaaaa');
+      text(`T THEME: ${themeName}`, W / 2, THEME_LINE_Y, 8, themeColor);
+    }
+    if (blink(1.5)) text(play, W / 2, 594, 12, '#ffffff');
   }
 
   function drawLeaderboardTable(title) {
@@ -1373,23 +1455,34 @@
         text(pad(G.score), W / 2, 210, 16, '#ffffff');
         text('ENTER YOUR INITIALS', W / 2, 280, 10, Theme.c.label);
         for (let i = 0; i < 3; i++) {
-          const x = W / 2 + (i - 1) * 60;
+          const x = nameX(i);
           const active = i === G.namePos;
           const ch = CHARS[G.name[i]];
-          text(ch === ' ' ? '_' : ch, x, 350, 32, active ? '#ffee33' : '#ffffff');
+          text(ch === ' ' ? '_' : ch, x, NAME_Y, 32, active ? '#ffee33' : '#ffffff');
+          if (Input.touch) {
+            text('+', x, NAME_Y - 46, 16, '#aaaaaa');
+            text('-', x, NAME_Y + 48, 16, '#aaaaaa');
+          }
           if (active && blink(3)) {
             ctx.fillStyle = '#ffee33';
             ctx.fillRect(x - 18, 376, 36, 4);
           }
         }
-        text('TYPE OR UP/DOWN TO PICK', W / 2, 440, 8, '#aaaaaa');
-        text('LEFT/RIGHT TO MOVE', W / 2, 460, 8, '#aaaaaa');
-        text('ENTER TO SAVE', W / 2, 480, 8, '#aaaaaa');
+        if (Input.touch) {
+          drawButton(SAVE_BTN, '#ffee33', 0.9);
+          ctx.globalAlpha = 1;
+          text('SAVE', SAVE_BTN.x, SAVE_BTN.y, 12, '#ffee33');
+          text('TAP + / - TO PICK LETTERS', W / 2, 535, 8, '#aaaaaa');
+        } else {
+          text('TYPE OR UP/DOWN TO PICK', W / 2, 440, 8, '#aaaaaa');
+          text('LEFT/RIGHT TO MOVE', W / 2, 460, 8, '#aaaaaa');
+          text('ENTER TO SAVE', W / 2, 480, 8, '#aaaaaa');
+        }
         break;
       }
       case 'leaderboard':
         drawLeaderboardTable('HIGH SCORES');
-        if (blink(1.5)) text('PRESS ENTER', W / 2, H - 50, 12, '#ffffff');
+        if (blink(1.5)) text(Input.touch ? 'TAP TO CONTINUE' : 'PRESS ENTER', W / 2, H - 50, 12, '#ffffff');
         break;
     }
 

@@ -12,15 +12,19 @@ const FRAME_MS = 1000 / 60;
 // Stands in for a canvas context: every property is callable and returns itself
 const blob = new Proxy(function () {}, { get: () => blob, apply: () => blob, set: () => true });
 
-// Boots a fresh Halloween game sitting on the title screen
-async function boot() {
+// Boots a fresh Halloween game sitting on the title screen. `phone` fakes a touchscreen.
+async function boot({ phone = false } = {}) {
   const listeners = {};
   const errors = [];
   let raf = null;
   let now = 0;
   const canvas = () => ({ width: 0, height: 0, getContext: () => blob });
+  // The game canvas is 480x640, shown at half size on screen
+  const gameCanvas = { width: 480, height: 640, getContext: () => blob,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 240, height: 320 }) };
   const sandbox = {
-    document: { getElementById: canvas, createElement: canvas },
+    document: { getElementById: () => gameCanvas, createElement: canvas },
+    matchMedia: q => ({ matches: phone && q === '(pointer: coarse)' }),
     localStorage: { getItem: k => (k === 'starblaster.theme' ? 'halloween' : null), setItem() {} },
     addEventListener: (type, fn) => (listeners[type] ||= []).push(fn),
     requestAnimationFrame: fn => { raf = fn; },
@@ -37,8 +41,12 @@ async function boot() {
   }
   await new Promise(r => setTimeout(r, 0)); // the game starts once the font promise settles
 
-  const game = vm.runInContext('({ G, Bullet, Enemy, PowerUp, BlackCat, Boss })', sandbox);
+  const game = vm.runInContext('({ G, Bullet, Enemy, PowerUp, BlackCat, Boss, Rocket })', sandbox);
   const key = (type, code) => (listeners[type] || []).forEach(fn => fn({ code, repeat: false, preventDefault() {} }));
+  // Touch helpers take game coordinates and convert to screen pixels
+  const finger = (type, x, y, id = 1) =>
+    (listeners[type] || []).forEach(fn => fn({ pointerType: 'touch', pointerId: id, clientX: x / 2, clientY: y / 2 }));
+  const tap = (x, y, id = 1) => { finger('pointerdown', x, y, id); finger('pointerup', x, y, id); };
   const run = seconds => {
     for (let i = 0; i < Math.round(seconds * 60); i++) raf(now += FRAME_MS);
   };
@@ -55,7 +63,8 @@ async function boot() {
     Object.assign(cat, { x: game.G.player.x - 5, y: game.G.player.y + 18, vx: 90 });
     return (game.G.cat = cat);
   };
-  return { ...game, key, run, play, catUnderShip, errors };
+  const Input = vm.runInContext('Input', sandbox);
+  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, context: sandbox };
 }
 
 test('boots to the title screen and starts a game without errors', async () => {
@@ -208,4 +217,205 @@ test('the cat runs off when a boss dies and is gone by level clear', async () =>
   t.run(2.5);
   assert.equal(t.G.state, 'levelclear');
   assert.equal(t.G.cat, null);
+});
+
+// Put a boss in its fight, holding its fire unless the test makes it attack
+function fightBoss(t, level) {
+  const boss = new t.Boss(level);
+  Object.assign(boss, { y: boss.targetY, state: 'fight', attackTimer: 999 });
+  Object.assign(t.G, { boss, phase: 'boss' });
+  return boss;
+}
+
+test('each campaign level has its own boss, and the order repeats each loop', async () => {
+  const t = await boot();
+  const names = [1, 2, 3, 4, 5, 6, 10, 11].map(n => new t.Boss(n, n % 6 === 0).def.hname);
+  assert.deepEqual(names, ['PUMPKIN KING', 'SPIDER QUEEN', 'THE REAPER', 'WEREWOLF', 'THE MONSTER', 'DRACULA', 'WEREWOLF', 'THE MONSTER']);
+});
+
+test('werewolf enemies no longer appear in any level', async () => {
+  const t = await boot();
+  const types = [1, 2, 3, 4, 5, 6].flatMap(n => vm.runInContext(`buildLevel(${n})`, t.context).map(ev => ev.type));
+  assert.ok(!types.includes('werewolf'));
+});
+
+test('the werewolf pounces at the player and springs back to its perch', async () => {
+  const t = await boot();
+  const p = t.play();
+  p.invuln = 99;
+  const boss = fightBoss(t, 4);
+  boss.attack('pounce', t.G);
+  const home = boss.y;
+  let lowest = boss.y;
+  for (let i = 0; i < 30; i++) { t.run(0.1); lowest = Math.max(lowest, boss.y); }
+  assert.ok(lowest > p.y - 30, `reached the player (lowest ${lowest}, player ${p.y})`);
+  assert.equal(boss.leap, null);
+  assert.ok(Math.abs(boss.y - home) < 20, 'back home');
+});
+
+test('the werewolf regenerates unless wounded by silver', async () => {
+  const t = await boot();
+  const p = t.play();
+  p.invuln = 99;
+  const boss = fightBoss(t, 4);
+  boss.hp = 500;
+  t.run(1);
+  assert.ok(boss.hp > 500, 'heals on its own');
+
+  boss.hp = 500;
+  t.G.playerBullets.push(new t.Bullet(boss.x, boss.y, 0, 0, true, { dmg: 1, silver: true }));
+  t.run(1 / 60);
+  const wounded = boss.hp;
+  assert.ok(Math.abs(wounded - 498) < 0.5, 'silver does double damage');
+  t.run(1.5);
+  assert.equal(boss.hp, wounded, 'no healing while wounded');
+  t.run(1);
+  assert.ok(boss.hp > wounded, 'heals again once the wound wears off');
+});
+
+test("the monster's lightning strikes the player's column", async () => {
+  const t = await boot();
+  const p = t.play();
+  const boss = fightBoss(t, 5);
+  boss.attack('lightning', t.G);
+  assert.deepEqual([...boss.laser.xs], [p.x]); // copy: arrays from the game's sandbox have a different prototype
+  p.invuln = 0;
+  p.shields = 1;
+  t.run(0.9);
+  assert.equal(p.shields, 0);
+});
+
+test('the monster comes back to life once, then dies for good', async () => {
+  const t = await boot();
+  const p = t.play();
+  p.invuln = 99;
+  const boss = fightBoss(t, 5);
+  const finish = () => {
+    boss.stun = 0;
+    boss.hp = 1;
+    t.G.playerBullets.push(new t.Bullet(boss.x, boss.y, 0, 0, true, { dmg: 5 }));
+    t.run(1 / 60);
+  };
+  finish();
+  assert.equal(boss.dead, false);
+  assert.equal(boss.revived, true);
+  assert.equal(Math.round(boss.hp), Math.round(boss.maxHp * 0.3));
+  finish();
+  assert.equal(boss.dead, true);
+  assert.equal(t.G.phase, 'bossdying');
+});
+
+test('rockets hit the monster twice as hard', async () => {
+  const t = await boot();
+  const p = t.play();
+  p.invuln = 99;
+  const boss = fightBoss(t, 5);
+  const hp = boss.hp;
+  t.G.playerBullets.push(new t.Rocket(boss.x, boss.y, 1));
+  t.run(1 / 60);
+  assert.equal(hp - boss.hp, 6);
+  assert.deepEqual(t.errors, []);
+});
+
+// ---------- touch controls ----------
+
+// Start a game by tapping, with an empty level
+function playByTouch(t) {
+  t.tap(240, 300);
+  t.run(0.1);
+  Object.assign(t.G, { events: [], bonusCount: 2, catTimer: 999, bannerTime: 0 });
+  return t.G.player;
+}
+
+test('phones start in touch mode; desktops start in keyboard mode', async () => {
+  assert.equal((await boot({ phone: true })).Input.touch, true);
+  assert.equal((await boot()).Input.touch, false);
+});
+
+test('a tap on the title screen starts the game', async () => {
+  const t = await boot({ phone: true });
+  playByTouch(t);
+  assert.equal(t.G.state, 'playing');
+});
+
+test('tapping the theme line switches theme instead of starting', async () => {
+  const t = await boot({ phone: true });
+  const halloween = vm.runInContext('Theme.halloween', t.context);
+  t.tap(240, 562);
+  t.run(0.1);
+  assert.equal(t.G.state, 'title');
+  assert.equal(vm.runInContext('Theme.halloween', t.context), !halloween);
+});
+
+test('dragging moves the ship by the distance the finger travels', async () => {
+  const t = await boot({ phone: true });
+  const p = playByTouch(t);
+  const [x0, y0] = [p.x, p.y];
+  t.finger('pointerdown', 300, 500);
+  t.finger('pointermove', 260, 470);
+  t.run(1 / 60);
+  assert.equal(p.x, x0 - 40);
+  assert.equal(p.y, y0 - 30);
+  t.finger('pointerup', 260, 470);
+  t.run(0.1);
+  assert.equal(p.x, x0 - 40, 'stays put once the finger lifts');
+});
+
+test('touch mode fires automatically while playing', async () => {
+  const t = await boot({ phone: true });
+  playByTouch(t);
+  t.run(0.5);
+  assert.ok(t.G.playerBullets.length > 0);
+});
+
+test('the pause button pauses without moving the ship, and any tap resumes', async () => {
+  const t = await boot({ phone: true });
+  const p = playByTouch(t);
+  const x0 = p.x;
+  t.finger('pointerdown', 480 - 26, 104);
+  t.finger('pointermove', 400, 104);
+  t.run(1 / 60);
+  assert.equal(t.G.paused, true);
+  assert.equal(p.x, x0);
+  t.finger('pointerup', 400, 104);
+  t.tap(100, 300);
+  t.run(1 / 60);
+  assert.equal(t.G.paused, false);
+});
+
+test('the ULT button fires the ultimate once it is charged', async () => {
+  const t = await boot({ phone: true });
+  playByTouch(t);
+  t.tap(480 - 46, 640 - 112);
+  t.run(1 / 60);
+  assert.equal(t.G.ultTime, 0, 'not charged yet');
+  t.G.ultCharge = 100;
+  t.tap(480 - 46, 640 - 112);
+  t.run(1 / 60);
+  assert.ok(t.G.ultTime > 0);
+});
+
+test('initials can be entered and saved by tapping', async () => {
+  const t = await boot({ phone: true });
+  playByTouch(t);
+  Object.assign(t.G, { score: 999999, lives: 1 });
+  t.G.player.invuln = 0;
+  t.G.enemyBullets.push(new t.Bullet(t.G.player.x, t.G.player.y, 0, 0, false));
+  t.run(6);
+  assert.equal(t.G.state, 'entername');
+  t.tap(180, 304); // '+' above the first letter: A -> B
+  t.run(1 / 60);
+  t.tap(240, 398); // '-' below the second letter: A wraps back to a space
+  t.run(1 / 60);
+  assert.equal(t.G.namePos, 1);
+  t.tap(240, 475); // SAVE
+  t.run(1 / 60);
+  assert.equal(t.G.state, 'leaderboard');
+  assert.equal(vm.runInContext('Leaderboard.all()[0].name', t.context), 'B A');
+});
+
+test('pressing a key switches back to keyboard mode', async () => {
+  const t = await boot({ phone: true });
+  t.key('keydown', 'ArrowLeft');
+  assert.equal(t.Input.touch, false);
 });

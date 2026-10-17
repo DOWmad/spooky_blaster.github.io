@@ -354,11 +354,13 @@ class Player {
     if (Input.isDown('ArrowUp', 'KeyW')) dy -= 1;
     if (Input.isDown('ArrowDown', 'KeyS')) dy += 1;
     if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
-    if (this.cursed > 0) { dx = -dx; dy = -dy; }
+    // Touch: the ship travels as far as the finger did
+    const flip = this.cursed > 0 ? -1 : 1;
+    const drag = Input.drag();
     this.cursed = Math.max(0, this.cursed - dt);
     this.jam = Math.max(0, this.jam - dt);
-    this.x = clamp(this.x + dx * this.speed * dt, 18, W - 18);
-    this.y = clamp(this.y + dy * this.speed * dt, 60, H - 30);
+    this.x = clamp(this.x + flip * (dx * this.speed * dt + drag.x), 18, W - 18);
+    this.y = clamp(this.y + flip * (dy * this.speed * dt + drag.y), 60, H - 30);
 
     this.invuln = Math.max(0, this.invuln - dt);
     this.rapid = Math.max(0, this.rapid - dt);
@@ -369,7 +371,7 @@ class Player {
 
     this.cool -= dt;
     this.secondaryCool -= dt;
-    const trigger = Input.isDown('Space') && this.jam <= 0;
+    const trigger = (Input.isDown('Space') || Input.touch) && this.jam <= 0; // touch auto-fires
     this.lasing = trigger && !!this.secondary && this.secondary.kind === 'laser';
     if (trigger) {
       if (this.cool <= 0) {
@@ -535,13 +537,12 @@ const ENEMY_TYPES = {
   mine:      { sprite: 'mine',      hp: 1,  score: 50,   speed: 50,  r: 9,  drop: 0 },
   phantom:   { sprite: 'phantom',   hp: 4,  score: 400,  speed: 100, r: 14, drop: 0.2 },
   bonus:     { sprite: 'bonus',     hp: 10, score: 3000, speed: 150, r: 18, drop: 0 },
-  werewolf:  { sprite: 'werewolf',  hp: 8,  score: 600,  speed: 80,  r: 16, drop: 0.2 },
   necromancer: { sprite: 'necromancer', hp: 10, score: 1000, speed: 70, r: 16, drop: 0.4 },
 };
 // Types a necromancer can raise from their remains
-const REVIVABLE = new Set(['grunt', 'swooper', 'shooter', 'diver', 'splitter', 'phantom', 'werewolf']);
+const REVIVABLE = new Set(['grunt', 'swooper', 'shooter', 'diver', 'splitter', 'phantom']);
 // Types that can roll as a gold-outlined elite
-const ELITE_TYPES = ['grunt', 'swooper', 'shooter', 'tank', 'diver', 'splitter', 'phantom', 'werewolf'];
+const ELITE_TYPES = ['grunt', 'swooper', 'shooter', 'tank', 'diver', 'splitter', 'phantom'];
 
 class Enemy {
   constructor(type, x, y, opts = {}) {
@@ -554,12 +555,9 @@ class Enemy {
     this.t = 0;
     this.elite = !!opts.elite;
     this.hp = this.maxHp = (def.hp + (opts.hpBonus || 0)) * (this.elite ? 3 : 1);
-    this.fullMoon = !!opts.fullMoon; // werewolves spawn enraged under the blood moon
-    this.silverT = 0;                // while > 0, silver wounds stop werewolf regeneration
     this.spellT = rand(0.8, 1.5);    // Halloween witches: time to next spell
     this.raised = !!opts.raised;     // brought back by a necromancer: half points, no drops
     this.owner = opts.owner || null;
-    this.pounces = 0;
     this.score = def.score * (this.elite ? 2 : 1);
     this.speedMul = opts.speedMul || 1;
     this.speed = def.speed * this.speedMul;
@@ -603,8 +601,6 @@ class Enemy {
     if (this.mode === 'fadein') return Math.min(1, this.modeT / 0.4);
     return 1;
   }
-
-  get enraged() { return this.fullMoon || this.hp < this.maxHp / 2; }
 
   setMode(mode) {
     this.mode = mode;
@@ -755,36 +751,6 @@ class Enemy {
           this.y += this.speed * 1.5 * dt;
         }
         break;
-      case 'werewolf':
-        // Prowl in, crouch, then pounce at the player; four leaps and it's gone
-        if (this.mode === 'enter') {
-          this.y += this.speed * dt;
-          if (this.y >= this.stopY * 0.7) {
-            this.setMode('crouch');
-            if (Theme.halloween) Sound.sfx.howl();
-          }
-        } else if (this.mode === 'crouch') {
-          if (this.modeT > (this.enraged ? 0.35 : 0.7)) {
-            const a = game.angleTo(this.x, this.y);
-            const s = 280 * this.speedMul * (this.enraged ? 1.4 : 1);
-            this.vx = Math.cos(a) * s;
-            this.vy = Math.sin(a) * s;
-            this.setMode('pounce');
-          }
-        } else if (this.mode === 'pounce') {
-          this.x += this.vx * dt;
-          this.y += this.vy * dt;
-          if (this.x < 16 || this.x > W - 16) { this.vx *= -1; this.x = clamp(this.x, 16, W - 16); }
-          if (this.modeT > 0.45) this.setMode(++this.pounces >= 4 ? 'leave' : 'crouch');
-        } else {
-          this.y += this.speed * 1.5 * dt;
-        }
-        // Halloween folklore: werewolves heal from anything but silver
-        this.silverT -= dt;
-        if (Theme.halloween && this.silverT <= 0 && this.hp < this.maxHp) {
-          this.hp = Math.min(this.maxHp, this.hp + 1.5 * dt);
-        }
-        break;
       case 'necromancer':
         // Hover near the top and raise the dead every few seconds, then withdraw
         if (this.mode === 'enter') {
@@ -933,7 +899,7 @@ const POWERUPS = {
   life:    { label: '+', name: '1UP',     color: '#ff44dd', weight: 2 },
   // Halloween folklore pickups
   garlic:  { label: 'G', name: 'GARLIC',  color: '#f5f0d0', weight: 7, theme: 'halloween' },
-  holy:    { label: 'W', name: 'HOLY H2O', color: '#66ccff', weight: 7, theme: 'halloween' },
+  holy:    { label: 'W', name: 'HOLY WATER', color: '#66ccff', weight: 7, theme: 'halloween' },
   silver:  { label: 'Ag', name: 'SILVER', color: '#e8eef8', weight: 7, theme: 'halloween' },
   cross:   { label: 'C', name: 'CROSS',   color: '#ffdd66', weight: 6, theme: 'halloween' },
   treat:   { label: 'T', name: 'TREAT',   color: '#ff99cc', weight: 8, theme: 'halloween' },
@@ -1059,7 +1025,7 @@ class BlackCat {
   }
 }
 
-// Each boss has HP-threshold phases; within a phase it picks attacks at random
+// One boss per campaign level (the last level is the final boss). Each has HP-threshold phases; within a phase it picks attacks at random
 // (never the same one twice running) so fights don't feel scripted.
 const BOSS_DEFS = [
   { name: 'MOTHERSHIP', hname: 'PUMPKIN KING', sprite: 'boss1', hp: 480, phases: [
@@ -1073,6 +1039,16 @@ const BOSS_DEFS = [
   { name: 'THE EYE', hname: 'THE REAPER', sprite: 'boss3', hp: 650, phases: [
     { hp: 1, patterns: ['ring', 'laser', 'spiral', 'wave'] },
     { hp: 0.5, patterns: ['ring', 'laser', 'spiral', 'wave', 'minions', 'rain'] },
+  ] },
+  // Leaves its perch to pounce at the player. Halloween: regenerates unless wounded by silver.
+  { name: 'ALPHA PROWLER', hname: 'WEREWOLF', sprite: 'boss4', hp: 560, fears: 'silver', phases: [
+    { hp: 1, patterns: ['pounce', 'fan', 'aimed', 'howl'] },
+    { hp: 0.5, patterns: ['pounce', 'fan', 'aimed', 'howl', 'rain'] },
+  ] },
+  // Slow and tanky; calls down lightning and has to be killed twice. Halloween: fears fire.
+  { name: 'THE GOLEM', hname: 'THE MONSTER', sprite: 'boss5', hp: 500, fears: 'fire', revives: true, phases: [
+    { hp: 1, patterns: ['lightning', 'stomp', 'rain', 'aimed'] },
+    { hp: 0.5, patterns: ['lightning', 'stomp', 'rain', 'fan', 'ring'] },
   ] },
 ];
 
@@ -1088,7 +1064,7 @@ const randInt = (a, b) => Math.floor(rand(a, b + 1));
 
 class Boss {
   constructor(level, final = false, loop = 0) {
-    this.def = final ? FINAL_BOSS : BOSS_DEFS[(level - 1) % BOSS_DEFS.length];
+    this.def = final ? FINAL_BOSS : BOSS_DEFS[(level - 1) % CAMPAIGN_LENGTH];
     this.maxHp = Math.round(final ? this.def.hp * (1 + 0.5 * loop) : this.def.hp * (1 + 0.25 * (level - 1)));
     this.hp = this.maxHp;
     const s = Sprites.get(this.def.sprite);
@@ -1109,6 +1085,9 @@ class Boss {
     this.queue = [];    // timed actions: [{ t, fn }]
     this.spiral = null;
     this.laser = null;
+    this.leap = null;   // werewolf pounce in progress
+    this.silverT = 0;   // while > 0, silver wounds stop werewolf regeneration
+    this.revived = false;
     // Time pressure: when the clock runs out the boss goes berserk
     this.timeLimit = final ? 100 : 55;
     this.timeLeft = this.timeLimit;
@@ -1120,7 +1099,48 @@ class Boss {
   get raging() { return this.phaseIdx > 0 || this.berserk; }
   get phase() { return this.def.phases[this.phaseIdx]; }
   get laserActive() { return !!this.laser && this.laser.t >= this.laser.warn; }
-  get busy() { return this.queue.length > 0 || !!this.spiral || !!this.laser; }
+  get busy() { return this.queue.length > 0 || !!this.spiral || !!this.laser || !!this.leap; }
+
+  // Drop the current attack. A werewolf in mid-pounce still springs back home.
+  cancelAttacks() {
+    this.queue = [];
+    this.spiral = null;
+    this.laser = null;
+    if (this.leap) this.startLeap('return', this.leap.home, 0.6);
+  }
+
+  startLeap(stage, to, dur) {
+    Object.assign(this.leap, { stage, t: 0, dur, fx: this.x, fy: this.y, tx: to.x, ty: to.y });
+  }
+
+  // Pounce: crouch (flashing), leap at the player, land, maybe go again, then spring home
+  updateLeap(dt, game) {
+    const lp = this.leap;
+    lp.t += dt;
+    const k = Math.min(1, lp.t / lp.dur);
+    const e = k * k * (3 - 2 * k);
+    this.x = lp.fx + (lp.tx - lp.fx) * e;
+    this.y = lp.fy + (lp.ty - lp.fy) * e;
+    if (lp.stage === 'crouch') this.flash = Math.floor(lp.t * 12) % 2 ? 0.02 : 0;
+    if (k < 1) return;
+    if (lp.stage === 'crouch') {
+      const p = game.player;
+      const target = p.alive ? { x: p.x, y: p.y } : { ...lp.home };
+      target.x = clamp(target.x, this.w / 2, W - this.w / 2);
+      target.y = Math.min(target.y, H - this.h / 2);
+      this.startLeap('jump', target, 0.45);
+      Sound.sfx.dive();
+    } else if (lp.stage === 'jump') {
+      game.shake = Math.max(game.shake, 8);
+      Sound.sfx.explode();
+      this.startLeap('land', this, 0.2);
+    } else if (lp.stage === 'land') {
+      if (--lp.left > 0) this.startLeap('crouch', this, 0.35);
+      else this.startLeap('return', lp.home, 0.6);
+    } else {
+      this.leap = null;
+    }
+  }
 
   // Queue `n` actions spaced `gap` seconds apart
   schedule(n, gap, fn) {
@@ -1144,15 +1164,14 @@ class Boss {
       this.phaseIdx = idx;
       this.lastPattern = null;
       if (this.def.final) {
-        this.queue = [];
-        this.spiral = null;
-        this.laser = null;
+        this.cancelAttacks();
         this.stun = 1.5;
         game.bossPhaseChange(idx);
       }
     }
 
-    if (!this.laser) {
+    if (this.leap) this.updateLeap(dt, game);
+    else if (!this.laser) {
       this.moveT += dt;
       const range = W / 2 - this.w / 2 - 10;
       this.x = W / 2 + Math.sin(this.moveT * 0.7 * this.speedMul) * range;
@@ -1163,6 +1182,12 @@ class Boss {
       this.stun -= dt;
       this.flash = Math.floor(this.stun * 12) % 2 ? 0.02 : 0;
       return;
+    }
+
+    // Halloween folklore: the werewolf heals from anything but silver
+    this.silverT -= dt;
+    if (Theme.halloween && this.def.fears === 'silver' && this.silverT <= 0) {
+      this.hp = Math.min(this.maxHp, this.hp + this.maxHp * 0.01 * dt);
     }
 
     this.timeLeft -= dt;
@@ -1203,7 +1228,11 @@ class Boss {
 
     if (this.laser) {
       this.laser.t += dt;
-      if (!this.laser.fired && this.laserActive) { this.laser.fired = true; Sound.sfx.laser(); }
+      if (!this.laser.fired && this.laserActive) {
+        this.laser.fired = true;
+        Sound.sfx.laser();
+        if (this.laser.bolt) game.flash = Math.max(game.flash, 0.3);
+      }
       if (this.laser.t > this.laser.warn + this.laser.dur) this.laser = null;
     }
 
@@ -1264,7 +1293,8 @@ class Boss {
       }
       case 'rain': {
         // Lobbed shower: tossed up out of the boss, arcing over and falling across the screen
-        const seeds = Theme.halloween && this.def.sprite === 'boss1' ? { color: '#f5e6a8' } : {}; // pumpkin seeds
+        const seeds = Theme.halloween && this.def.sprite === 'boss1' ? { color: '#f5e6a8' } // pumpkin seeds
+          : this.def.sprite === 'boss5' ? { color: Theme.c.rockStroke, r: 6 } : {};          // masonry
         this.schedule(rage ? 24 : 16, 0.08, () => game.enemyBullets.push(new Bullet(
           this.x + rand(-this.w * 0.3, this.w * 0.3), this.y - this.h * 0.3,
           rand(-170, 170), rand(-300, -220), false, { gravity: 320, ...seeds })));
@@ -1296,6 +1326,34 @@ class Boss {
       case 'twinLaser':
         this.laser = { t: 0, warn: 0.8, dur: 1.3, xs: [this.x - 50, this.x + 50], fired: false };
         break;
+      case 'pounce':
+        this.leap = { home: { x: this.x, y: this.y }, left: rage ? 2 : 1 };
+        this.startLeap('crouch', this, 0.6);
+        break;
+      case 'howl':
+        this.schedule(rage ? 3 : 2, 0.35, i => game.ring(this.x, this.y, 14, 150, i * 0.2));
+        game.shake = Math.max(game.shake, 6);
+        if (Theme.halloween) Sound.sfx.howl();
+        break;
+      case 'lightning': {
+        // Bolts from the sky: one on the player, more either side when enraged
+        const px = clamp(game.player.x, 20, W - 20);
+        const xs = [px];
+        if (rage) xs.push(clamp(px + rand(70, 130), 20, W - 20), clamp(px - rand(70, 130), 20, W - 20));
+        this.laser = { t: 0, warn: 0.8, dur: 0.35, xs, fired: false, bolt: true };
+        break;
+      }
+      case 'stomp':
+        // Rows of rubble with one gap to slip through
+        game.shake = Math.max(game.shake, 10);
+        Sound.sfx.explode();
+        this.schedule(rage ? 2 : 1, 0.7, () => {
+          const gap = rand(60, W - 60);
+          for (let x = 12; x < W; x += 24) {
+            if (Math.abs(x - gap) > 34) game.enemyBullets.push(new Bullet(x, muzzle(), 0, 120, false, { color: Theme.c.rockStroke }));
+          }
+        });
+        break;
     }
   }
 
@@ -1305,9 +1363,19 @@ class Boss {
 
   draw(ctx) {
     if (this.laser) {
-      const top = this.y + this.h * 0.3;
+      const top = this.laser.bolt ? 0 : this.y + this.h * 0.3;
       for (const lx of this.laser.xs) {
-        if (!this.laserActive) {
+        if (this.laser.bolt && this.laserActive) {
+          // Lightning: a pale glow with a crackling zigzag down the column
+          ctx.fillStyle = 'rgba(200, 220, 255, 0.35)';
+          ctx.fillRect(lx - 14, 0, 28, H);
+          ctx.strokeStyle = '#ffffcc';
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.moveTo(lx, 0);
+          for (let y = 40; y <= H; y += 40) ctx.lineTo(lx + rand(-10, 10), y);
+          ctx.stroke();
+        } else if (!this.laserActive) {
           if (Math.floor(this.laser.t * 20) % 2) {
             ctx.fillStyle = 'rgba(255, 60, 60, 0.8)';
             ctx.fillRect(lx - 1, top, 2, H - top);
