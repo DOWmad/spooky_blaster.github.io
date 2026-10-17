@@ -512,3 +512,87 @@ test('a rejected or failed submit resolves to null', async () => {
   const t = await boot();
   assert.equal(await vm.runInContext('Leaderboard.world', t.context).startRun(), null);
 });
+
+// ---------- world leaderboard in the game ----------
+
+// Play until game over with a qualifying score, then sit on the initials screen
+function reachInitials(t, score = 999999) {
+  const p = t.play();
+  Object.assign(t.G, { score, lives: 1 });
+  p.invuln = 0;
+  t.G.enemyBullets.push(new t.Bullet(p.x, p.y, 0, 0, false));
+  t.run(6);
+  assert.equal(t.G.state, 'entername');
+}
+
+test('a game asks for a run token, and saving initials submits the score with it', async () => {
+  const server = fakeServer({ top: [200, WORLD], start: [200, { token: 'tok-9' }], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch });
+  t.run(0.2);
+  await t.flush();
+  reachInitials(t);
+  await t.flush();
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  assert.equal(t.G.worldRank, 'pending');
+  await t.flush();
+  assert.equal(t.G.worldRank, 1);
+  const submit = server.calls.find(c => c.action === 'submit');
+  assert.deepEqual(submit.body, { token: 'tok-9', name: 'AAA', score: 999999, level: 1 }); // initials start as AAA
+  assert.equal(t.G.state, 'leaderboard');
+});
+
+test('offline at the start: saving initials skips the world submit and saves locally', async () => {
+  const t = await boot();
+  reachInitials(t);
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  await t.flush();
+  assert.equal(t.G.worldRank, 'failed');
+  assert.equal(vm.runInContext('Leaderboard.all()[0].score', t.context), 999999);
+});
+
+test('a dropped connection at submit time shows NOT SUBMITTED, local save intact', async () => {
+  let online = true;
+  const server = fakeServer({ start: [200, { token: 'tok-1' }] });
+  const t = await boot({ fetch: (url, opts) => (online ? server.fetch(url, opts) : Promise.reject(new Error('offline'))) });
+  reachInitials(t);
+  await t.flush();
+  online = false;
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  await t.flush();
+  assert.equal(t.G.worldRank, 'failed');
+  assert.equal(vm.runInContext('Leaderboard.all()[0].score', t.context), 999999);
+});
+
+test("a late answer from an old game doesn't touch the new game", async () => {
+  let release;
+  const server = fakeServer({ start: [200, { token: 'tok-1' }] });
+  const slowSubmit = new Promise(r => { release = r; });
+  const t = await boot({
+    fetch: (url, opts) => (url.endsWith('/submit')
+      ? slowSubmit.then(() => ({ ok: true, status: 200, json: async () => ({ rank: 4 }) }))
+      : server.fetch(url, opts)),
+  });
+  reachInitials(t);
+  await t.flush();
+  t.key('keydown', 'Enter');
+  t.run(1 / 60);
+  t.run(1);
+  t.key('keydown', 'Space'); // leaderboard -> title
+  t.run(1 / 60);
+  t.key('keyup', 'Space');
+  t.run(0.1);
+  t.play(); // a new game starts while the old submit is still in flight
+  release();
+  await t.flush();
+  assert.equal(t.G.worldRank, null);
+});
+
+test('a score that only makes the world top 10 still gets initials entry', async () => {
+  const t = await boot({ fetch: fakeServer({ top: [200, WORLD] }).fetch });
+  for (let i = 0; i < 10; i++) vm.runInContext(`Leaderboard.add('TOP', ${1e7 + i}, 9)`, t.context);
+  await vm.runInContext('Leaderboard.world', t.context).refresh(true);
+  reachInitials(t, 60000); // beats nothing locally, but the world list has only 2 entries
+});

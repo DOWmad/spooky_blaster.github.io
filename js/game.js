@@ -24,6 +24,7 @@
     ultCharge: 0, ultTime: 0,
     waves: [], hitstop: 0, bonusTimer: 0, bonusCount: 0, victory: false, livesBonus: 0, corpses: [],
     cat: null, catTimer: 0, treats: 0, spook: 0,
+    runId: 0, runToken: null, worldRank: null,
   };
   window.G = G; // handy for debugging from the console
 
@@ -292,6 +293,12 @@
     G.lastRank = -1;
     G.ultCharge = 0;
     G.treats = 0;
+    // Ask the world leaderboard for a run token in the background; a late reply is
+    // ignored if another game has started since
+    const run = ++G.runId;
+    G.runToken = null;
+    G.worldRank = null;
+    Leaderboard.world.startRun().then(token => { if (G.runId === run) G.runToken = token; });
     G.player = new Player();
     startLevel(1);
     setState('playing');
@@ -743,6 +750,7 @@
   // ---------- per-state updates ----------
 
   function updateTitle() {
+    Leaderboard.world.refresh();
     const themeTap = !titleShowsTable() && Input.taps().find(t => Math.abs(t.y - THEME_LINE_Y) < 14);
     if (Input.wasPressed('KeyT') || themeTap) {
       Theme.toggle();
@@ -958,7 +966,7 @@
 
   function updateGameOver() {
     if (G.stateTime >= 3 || (G.stateTime > 1 && (Input.wasPressed('Enter') || tapped()))) {
-      if (Leaderboard.qualifies(G.score)) {
+      if (Leaderboard.qualifies(G.score) || Leaderboard.world.qualifies(G.score)) {
         G.name = [0, 0, 0];
         G.namePos = 0;
         setState('entername');
@@ -1000,12 +1008,28 @@
     if (Input.wasPressed('Enter') || tapOn(SAVE_BTN)) {
       const name = G.name.map(i => CHARS[i]).join('').trim() || '???';
       G.lastRank = Leaderboard.add(name, G.score, G.level);
+      submitWorld(name);
       Sound.sfx.confirm();
       setState('leaderboard');
     }
   }
 
+  // Send the finished run to the world board; the leaderboard screen shows the outcome
+  function submitWorld(name) {
+    const token = G.runToken;
+    G.runToken = null; // a token is good for one submission
+    if (!token) { G.worldRank = 'failed'; return; }
+    const run = G.runId;
+    G.worldRank = 'pending';
+    Leaderboard.world.submit(token, name, G.score, G.level).then(rank => {
+      if (G.runId !== run) return;
+      G.worldRank = rank ?? 'failed';
+      if (rank) Leaderboard.world.refresh(true);
+    });
+  }
+
   function updateLeaderboard() {
+    Leaderboard.world.refresh();
     if (G.stateTime > 0.5 && (Input.wasPressed('Enter', 'Space') || tapped())) {
       Sound.sfx.confirm();
       setState('title');
@@ -1317,7 +1341,7 @@
   function drawTitle() {
     const play = Input.touch ? 'TAP TO PLAY' : 'PRESS ENTER TO PLAY';
     if (titleShowsTable()) {
-      drawLeaderboardTable('HIGH SCORES');
+      drawBestTable(false);
       if (blink(1.5)) text(play, W / 2, H - 50, 12, '#ffffff');
       return;
     }
@@ -1375,17 +1399,27 @@
     if (blink(1.5)) text(play, W / 2, 594, 12, '#ffffff');
   }
 
-  function drawLeaderboardTable(title) {
+  // World top 10 when we have it; otherwise the local table, marked offline
+  function drawBestTable(highlightLocal) {
+    const world = Leaderboard.world.top;
+    if (world) {
+      const r = G.worldRank;
+      drawLeaderboardTable('WORLD TOP 10', world, typeof r === 'number' && r <= 10 ? r - 1 : -1);
+    } else {
+      drawLeaderboardTable('HIGH SCORES (OFFLINE)', Leaderboard.all(), highlightLocal ? G.lastRank : -1);
+    }
+  }
+
+  function drawLeaderboardTable(title, list, highlightIdx) {
     text(title, W / 2, 80, 20, rainbow(0));
     text('RANK', 60, 130, 10, Theme.c.label, 'left');
     text('NAME', 160, 130, 10, Theme.c.label, 'left');
     text('SCORE', 340, 130, 10, Theme.c.label, 'right');
     text('LV', 420, 130, 10, Theme.c.label, 'right');
-    const list = Leaderboard.all();
     for (let i = 0; i < 10; i++) {
       const y = 166 + i * 34;
       const e = list[i];
-      const highlight = i === G.lastRank;
+      const highlight = i === highlightIdx;
       const color = highlight ? (blink(4) ? '#ffee33' : '#ff9933') : i < 3 ? '#33ffff' : '#ffffff';
       text(`${i + 1}`.padStart(2, ' '), 60, y, 12, color, 'left');
       if (e) {
@@ -1481,7 +1515,10 @@
         break;
       }
       case 'leaderboard':
-        drawLeaderboardTable('HIGH SCORES');
+        drawBestTable(true);
+        if (G.worldRank === 'pending') text('SUBMITTING...', W / 2, H - 90, 10, '#aaaaaa');
+        else if (G.worldRank === 'failed') text('NOT SUBMITTED - SAVED ON THIS DEVICE', W / 2, H - 90, 8, '#ff9933');
+        else if (typeof G.worldRank === 'number') text(`WORLD RANK #${G.worldRank}`, W / 2, H - 90, 12, '#ffee33');
         if (blink(1.5)) text(Input.touch ? 'TAP TO CONTINUE' : 'PRESS ENTER', W / 2, H - 50, 12, '#ffffff');
         break;
     }
