@@ -12,8 +12,9 @@ const FRAME_MS = 1000 / 60;
 // Stands in for a canvas context: every property is callable and returns itself
 const blob = new Proxy(function () {}, { get: () => blob, apply: () => blob, set: () => true });
 
-// Boots a fresh Halloween game sitting on the title screen. `phone` fakes a touchscreen.
-async function boot({ phone = false } = {}) {
+// Boots a fresh Halloween game sitting on the title screen. `phone` fakes a touchscreen;
+// `fetch` stands in for the network (default: offline).
+async function boot({ phone = false, fetch = () => Promise.reject(new Error('offline')) } = {}) {
   const listeners = {};
   const errors = [];
   let raf = null;
@@ -32,6 +33,7 @@ async function boot({ phone = false } = {}) {
     console: { ...console, error: (...a) => errors.push(a.join(' ')) },
     setTimeout,
     setInterval() {}, // music scheduler - nothing to play here
+    fetch, AbortController, clearTimeout,
   };
   sandbox.window = sandbox;
   vm.createContext(sandbox);
@@ -64,7 +66,23 @@ async function boot({ phone = false } = {}) {
     return (game.G.cat = cat);
   };
   const Input = vm.runInContext('Input', sandbox);
-  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, context: sandbox };
+  // Let pending network promises settle
+  const flush = () => new Promise(r => setImmediate(r));
+  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, flush, context: sandbox };
+}
+
+// A fake leaderboard server: routes by the last path segment and records each request
+function fakeServer(routes) {
+  const calls = [];
+  const fetch = async (url, opts = {}) => {
+    const action = url.split('/').pop();
+    calls.push({ action, method: opts.method || 'GET', headers: opts.headers || {}, body: opts.body ? JSON.parse(opts.body) : undefined });
+    const reply = routes[action];
+    if (!reply) return { ok: false, status: 404, json: async () => ({}) };
+    const [status, data] = typeof reply === 'function' ? reply(calls[calls.length - 1]) : reply;
+    return { ok: status >= 200 && status < 300, status, json: async () => data };
+  };
+  return { fetch, calls };
 }
 
 test('boots to the title screen and starts a game without errors', async () => {
@@ -418,4 +436,79 @@ test('pressing a key switches back to keyboard mode', async () => {
   const t = await boot({ phone: true });
   t.key('keydown', 'ArrowLeft');
   assert.equal(t.Input.touch, false);
+});
+
+// ---------- world leaderboard client ----------
+
+const WORLD = [
+  { name: 'ACE', score: 90000, level: 7, at: '2026-10-17T10:00:00Z' },
+  { name: 'BOB', score: 50000, level: 5, at: '2026-10-17T11:00:00Z' },
+];
+
+test('the world top 10 is fetched with the publishable key and feeds the HI score', async () => {
+  const server = fakeServer({ top: [200, WORLD] });
+  const t = await boot({ fetch: server.fetch });
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  await world.refresh(true);
+  assert.equal(world.top.length, 2);
+  assert.equal(world.top[0].name, 'ACE');
+  assert.match(server.calls[0].headers.apikey, /^sb_publishable_/);
+  assert.equal(server.calls[0].headers.Authorization, undefined, 'never a bearer token');
+  assert.equal(vm.runInContext('Leaderboard.hiScore()', t.context), 90000);
+});
+
+test('offline: no world table, and the local HI score still works', async () => {
+  const t = await boot();
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  assert.equal(await world.refresh(true), null);
+  assert.equal(world.top, null);
+  assert.equal(vm.runInContext('Leaderboard.hiScore()', t.context), 30000);
+});
+
+test('malformed world data is filtered, never trusted', async () => {
+  const junk = [
+    { name: 'OK', score: 100, level: 1 },
+    { name: 123, score: 5 }, { name: 'X', score: 'lots' }, null,
+    { name: 'A'.repeat(50), score: 10, level: 1 },
+  ];
+  for (const reply of [[200, junk], [200, { not: 'an array' }], [500, {}]]) {
+    const t = await boot({ fetch: fakeServer({ top: reply }).fetch });
+    const world = vm.runInContext('Leaderboard.world', t.context);
+    await world.refresh(true);
+    const top = world.top;
+    assert.ok(top === null || top.every(e => typeof e.name === 'string' && e.name.length <= 3 && Number.isFinite(e.score)));
+    t.run(10); // the title screen alternates to the table; drawing it must not throw
+    assert.deepEqual(t.errors, []);
+  }
+});
+
+test('refresh is throttled to once a minute unless forced', async () => {
+  const server = fakeServer({ top: [200, WORLD] });
+  const t = await boot({ fetch: server.fetch });
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  await world.refresh();
+  await world.refresh();
+  assert.equal(server.calls.length, 1);
+  await world.refresh(true);
+  assert.equal(server.calls.length, 2);
+});
+
+test('startRun and submit speak the server protocol', async () => {
+  const server = fakeServer({ start: [200, { token: 'tok-1' }], submit: [200, { rank: 3 }] });
+  const t = await boot({ fetch: server.fetch });
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  assert.equal(await world.startRun(), 'tok-1');
+  assert.equal(await world.submit('tok-1', 'ABC', 1200, 2), 3);
+  assert.deepEqual(server.calls[0].body, {});
+  assert.deepEqual(server.calls[1].body, { token: 'tok-1', name: 'ABC', score: 1200, level: 2 });
+  assert.equal(server.calls[1].method, 'POST');
+});
+
+test('a rejected or failed submit resolves to null', async () => {
+  for (const reply of [[400, { error: 'rejected' }], [200, { rank: 'first' }]]) {
+    const t = await boot({ fetch: fakeServer({ submit: reply }).fetch });
+    assert.equal(await vm.runInContext('Leaderboard.world', t.context).submit('tok', 'ABC', 10, 1), null);
+  }
+  const t = await boot();
+  assert.equal(await vm.runInContext('Leaderboard.world', t.context).startRun(), null);
 });
