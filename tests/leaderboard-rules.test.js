@@ -68,12 +68,15 @@ test('routing', async () => {
   assert.equal(route('GET', '/leaderboard/admin'), 'not_found');
 });
 
-test('client IP is the right-most forwarded address', async () => {
+test('client IP comes from cf-connecting-ip, never from caller-controlled X-Forwarded-For', async () => {
   const { clientIp } = await load();
-  assert.equal(clientIp(new Headers({ 'x-forwarded-for': '1.2.3.4, 10.0.0.1 , 203.0.113.9' })), '203.0.113.9');
-  assert.equal(clientIp(new Headers({ 'x-forwarded-for': '203.0.113.9' })), '203.0.113.9');
+  // Verified live: Cloudflare sets cf-connecting-ip and rejects requests that try to supply it;
+  // X-Forwarded-For's right-most entry is a per-request internal hop.
+  assert.equal(clientIp(new Headers({ 'cf-connecting-ip': '203.0.113.9', 'x-forwarded-for': '198.51.100.7, 10.0.0.1' })), '203.0.113.9');
+  assert.equal(clientIp(new Headers({ 'cf-connecting-ip': ' 203.0.113.9 ' })), '203.0.113.9');
+  assert.equal(clientIp(new Headers({ 'x-forwarded-for': '203.0.113.9' })), null, 'no platform header: shared budget');
   assert.equal(clientIp(new Headers()), null);
-  assert.equal(clientIp(new Headers({ 'x-forwarded-for': ' , ' })), null);
+  assert.equal(clientIp(new Headers({ 'cf-connecting-ip': '  ' })), null);
 });
 
 test('IP hashes are salted SHA-256 hex', async () => {

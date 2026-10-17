@@ -62,11 +62,12 @@ export function plausible({ score, level }, durationS) {
     && durationS >= LIMITS.secondsPerLevel * (level - 1);
 }
 
-// The right-most X-Forwarded-For entry is the one added by the platform's edge;
-// anything to its left can be supplied by the caller. (Verified live in Task 4.)
+// Cloudflare (in front of Supabase Edge Functions) sets cf-connecting-ip to the real client
+// and rejects requests that try to supply it; X-Forwarded-For's last entry is an internal
+// hop and its first entries are caller-controlled. Verified live (Task 4).
 export function clientIp(headers) {
-  const entries = (headers.get('x-forwarded-for') || '').split(',').map(s => s.trim()).filter(Boolean);
-  return entries.length ? entries[entries.length - 1] : null;
+  const ip = (headers.get('cf-connecting-ip') || '').trim();
+  return ip || null;
 }
 
 export async function ipHash(ip, salt) {
