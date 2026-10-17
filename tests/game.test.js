@@ -288,7 +288,7 @@ test('necromancer waits for real corpses instead of summoning fallback grunts', 
   t.play();
   const nec = restingNecromancer(t);
   nec.update(0.01, t.G);
-  assert.equal(nec.maxHp, 30);
+  assert.equal(nec.maxHp, 50);
   assert.equal(nec.mode, 'cast');
   assert.equal(t.G.enemies.length, 1);
 });
@@ -401,7 +401,7 @@ test('necromancer ritual scales its threshold and breaks on the twentieth damage
   t.run(0.02);
   assert.equal(nec.mode, 'ritual');
   assert.equal(nec.ritualDamage, 19);
-  assert.equal(nec.hp, 11);
+  assert.equal(nec.hp, nec.maxHp - 19);
 
   t.G.playerBullets.push(new t.Bullet(nec.x, nec.y, 0, 0, true, { dmg: 1 }));
   t.run(0.02);
@@ -426,7 +426,7 @@ test('holy water contributes post-modifier damage to a necromancer ritual', asyn
   t.G.playerBullets.push(new t.Bullet(nec.x, nec.y, 0, 0, true, { dmg: 10, holy: true }));
   t.run(0.02);
   assert.equal(nec.mode, 'stunned');
-  assert.equal(nec.hp, 10);
+  assert.equal(nec.hp, nec.maxHp - 20);
 });
 
 test('killing a channeling necromancer cancels its ritual and crumbles its dead', async () => {

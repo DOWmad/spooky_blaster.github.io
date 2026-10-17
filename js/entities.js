@@ -537,7 +537,7 @@ const ENEMY_TYPES = {
   mine:      { sprite: 'mine',      hp: 1,  score: 50,   speed: 50,  r: 9,  drop: 0 },
   phantom:   { sprite: 'phantom',   hp: 4,  score: 400,  speed: 100, r: 14, drop: 0.2 },
   bonus:     { sprite: 'bonus',     hp: 10, score: 3000, speed: 150, r: 18, drop: 0 },
-  necromancer: { sprite: 'necromancer', hp: 30, score: 1000, speed: 70, r: 16, drop: 0.4 },
+  necromancer: { sprite: 'necromancer', hp: 50, score: 1000, speed: 70, r: 16, drop: 0.4 },
 };
 // Types a necromancer can raise from their remains
 const REVIVABLE = new Set(['grunt', 'swooper', 'shooter', 'diver', 'splitter', 'phantom']);

@@ -24,7 +24,7 @@ Existing rules remain:
 
 ### Baseline durability
 
-- Increase the necromancer's base health from 10 to **30**.
+- Increase the necromancer's base health from 10 to **50** (raised from 30 after playtesting: Halloween holy water doubles damage, so 30 HP broke the ritual and killed it in one burst).
 - Keep the existing gentle campaign-loop health bonus supplied by `buildLevel`.
 - Keep its current score, movement speed, drop chance, entry movement, and horizontal hover movement.
 
