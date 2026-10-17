@@ -186,7 +186,7 @@ const GUN_LEVELS = [
   { offsets: [-12, -4, 4, 12], dmg: 1.75 },
 ];
 const MAX_POWER = GUN_LEVELS.length - 1;
-const SHIP_SPEED = [0, 260, 290, 320];
+const SHIP_SPEED = [0, 260, 290, 320, 340, 360];
 const GARLIC_RADIUS = 90;
 const MAX_MK = SHIP_SPEED.length - 1;
 

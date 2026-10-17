@@ -135,6 +135,46 @@ test('treats stack up to three', async () => {
   assert.equal(t.G.treats, 3);
 });
 
+test('ship pickups advance through MK5, then pay points; death drops one class', async () => {
+  const t = await boot();
+  const p = t.play();
+  for (const [mk, speed] of [[2, 290], [3, 320], [4, 340], [5, 360]]) {
+    t.G.powerups.push(new t.PowerUp(p.x, p.y, 'ship'));
+    t.run(0.1);
+    assert.equal(p.mk, mk);
+    assert.equal(p.speed, speed);
+    assert.equal(p.maxShields, mk + 1);
+    assert.equal(p.shields, mk + 1, 'a new hull fills its shields');
+  }
+  const score = t.G.score;
+  t.G.powerups.push(new t.PowerUp(p.x, p.y, 'ship'));
+  t.run(0.1);
+  assert.equal(p.mk, 5);
+  assert.equal(t.G.score, score + 5000);
+  p.downgrade();
+  assert.equal(p.mk, 4);
+  assert.equal(p.speed, 340);
+  assert.equal(p.shields, 0);
+});
+
+test('MK4 and MK5 have distinct hull sprites in both themes', async () => {
+  const t = await boot();
+  const p = t.play();
+  const sprites = vm.runInContext('Sprites', t.context);
+  const halloween = [4, 5].map(mk => sprites.get(`player_mk${mk}`));
+  assert.ok(halloween.every(Boolean));
+  vm.runInContext('Theme.toggle()', t.context);
+  const classic = [4, 5].map(mk => sprites.get(`player_mk${mk}`));
+  assert.ok(classic.every(Boolean));
+  assert.notEqual(classic[0], classic[1]);
+  for (let i = 0; i < 2; i++) assert.notEqual(halloween[i], classic[i]);
+  p.invuln = 0;
+  for (const mk of [4, 5]) { p.mk = mk; p.draw(blob, t.G.t); }
+  vm.runInContext('Theme.toggle()', t.context);
+  for (const mk of [4, 5]) { p.mk = mk; p.draw(blob, t.G.t); }
+  assert.deepEqual(t.errors, []);
+});
+
 test('feeding the cat a treat freezes enemies and their shots for 5 seconds', async () => {
   const t = await boot();
   const p = t.play();

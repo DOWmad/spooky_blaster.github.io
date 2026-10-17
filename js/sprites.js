@@ -142,6 +142,33 @@ const Sprites = (() => {
       'WWWW.WWWWW.WWWW',
       'W..R..R.R..R..W',
     ] },
+    player_mk4: { scale: 3, rows: mirror([
+      '........W',
+      '.......WC',
+      '......WWC',
+      '.....WWWC',
+      '..Y..WWWW',
+      '.YR.WWBWB',
+      'YRBBWWWWW',
+      'RBBWWWWWW',
+      'RWWWWWWWW',
+      '.RWWWWWWW',
+      '..R..R.R.',
+    ]) },
+    player_mk5: { scale: 3, rows: mirror([
+      '.........W',
+      '........WC',
+      '.......WWC',
+      '......WWWC',
+      '...Y..WWWW',
+      '..YR.WWBWB',
+      '.YRBBWWWWW',
+      'YRBBBWWWWW',
+      'RBBWWWWWWW',
+      'RWWWWWWWWW',
+      '.RWWWWWWWW',
+      '..R..R..R.',
+    ]) },
 
     diver: { scale: 3, rows: [
       'R.........R',
@@ -518,7 +545,7 @@ const Sprites = (() => {
 
   // Halloween ship classes are recolors of the classic hulls
   const PUMPKIN_SHIP = { W: 'O', C: 'L', B: 'K', R: 'V', Y: 'N' };
-  for (const key of ['player_mk2', 'player_mk3']) {
+  for (const key of ['player_mk2', 'player_mk3', 'player_mk4', 'player_mk5']) {
     ART['h_' + key] = { scale: 3, rows: recolor(ART[key].rows, PUMPKIN_SHIP) };
   }
 
