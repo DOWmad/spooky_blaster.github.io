@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Star Blaster</title>
+  <title>Spooky Blaster</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
@@ -11,7 +11,21 @@
 </head>
 <body>
   <div class="crt">
-    <canvas id="game" width="480" height="640"></canvas>
+    <canvas id="game" width="480" height="640" tabindex="-1"></canvas>
+    <button id="item-guide-open" class="item-guide-open" type="button" hidden>ITEM GUIDE</button>
+    <section id="item-guide" class="item-guide" role="dialog" aria-modal="true" aria-labelledby="item-guide-title" hidden>
+      <div class="item-guide-header">
+        <h2 id="item-guide-title">ITEM GUIDE</h2>
+        <button id="item-guide-close" type="button" aria-label="Close item guide">CLOSE</button>
+      </div>
+      <p class="item-guide-intro">Collect these symbols during a run.</p>
+      <ul id="item-guide-list" class="item-guide-list"></ul>
+      <div class="item-guide-footer">
+        <button id="item-guide-prev" type="button">PREV</button>
+        <span id="item-guide-page" aria-live="polite"></span>
+        <button id="item-guide-next" type="button">NEXT</button>
+      </div>
+    </section>
   </div>
 
   <script src="js/theme.js"></script>

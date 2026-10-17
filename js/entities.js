@@ -117,6 +117,21 @@ class ChainBolt extends Bullet {
     this.chainJumps = level + 1;
     this.chainRange = 75 + level * 25;
   }
+
+  draw(ctx) {
+    ctx.fillStyle = Theme.halloween ? '#cc99ff' : '#66ffff';
+    ctx.beginPath();
+    ctx.moveTo(this.x + 1, this.y - 11);
+    ctx.lineTo(this.x - 5, this.y);
+    ctx.lineTo(this.x, this.y);
+    ctx.lineTo(this.x - 2, this.y + 10);
+    ctx.lineTo(this.x + 6, this.y - 2);
+    ctx.lineTo(this.x + 1, this.y - 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(this.x, this.y - 7, 2, 5);
+  }
 }
 
 // Homing missile fired at max weapon power. Lives in playerBullets so the
@@ -657,11 +672,13 @@ class Enemy {
 
   // Phantoms can't be hit while faded out
   get intangible() {
+    if (this.type === 'necromancer') return this.mode === 'enter';
     if (this.type !== 'phantom') return false;
     return this.mode === 'hidden' || (this.mode === 'fadeout' && this.modeT > 0.2) || (this.mode === 'fadein' && this.modeT < 0.2);
   }
 
   get alpha() {
+    if (this.type === 'necromancer' && this.mode === 'enter') return 0.65;
     if (this.type !== 'phantom') return 1;
     if (this.mode === 'fadeout') return Math.max(0, 1 - this.modeT / 0.4);
     if (this.mode === 'hidden') return 0;
@@ -953,6 +970,13 @@ class Enemy {
     const y = Math.round(this.y - s.h / 2);
     ctx.save();
     ctx.globalAlpha = alpha;
+    if (this.type === 'necromancer' && this.mode === 'enter') {
+      ctx.strokeStyle = Theme.halloween ? '#66ff66' : '#33ffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.r + 8, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     if (this.mode === 'stunned') {
       ctx.translate(this.x, this.y);
       ctx.rotate(Math.sin(t * 30) * 0.12);
@@ -1031,26 +1055,26 @@ class Asteroid {
 }
 
 const POWERUPS = {
-  power:   { label: 'P', name: 'POWER',   color: '#ffee33', weight: 25 },
-  spread:  { label: 'S', name: 'SPREAD',  color: '#33ff66', weight: 18 },
-  rapid:   { label: 'R', name: 'RAPID',   color: '#ff9933', weight: 14 },
-  rockets: { label: 'X', name: 'ROCKETS', color: '#ff6633', weight: 10 },
-  homing:  { label: 'H', name: 'HOMING',  color: '#ccccff', weight: 10 },
-  drone:   { label: 'D', name: 'DRONE',   color: '#33ffff', weight: 8 },
-  laser:   { label: 'L', name: 'LASER',   color: '#ff3366', weight: 8 },
-  chain:   { label: 'Z', name: 'CHAIN',   color: '#aaffff', weight: 8 },
-  shield:  { label: 'O', name: 'SHIELD',  color: '#3399ff', weight: 12 },
-  chrono:  { label: 'Q', name: 'CHRONO CELL', color: '#99ddff', weight: 4 },
-  capacitor: { label: 'K', name: 'GRAZE CAP', color: '#aaffff', weight: 5 },
-  ship:    { label: 'U', name: 'UPGRADE', color: '#ffffff', weight: 3 },
-  bomb:    { label: 'B', name: 'BOMB',    color: '#ff3344', weight: 9 },
-  life:    { label: '+', name: '1UP',     color: '#ff44dd', weight: 2 },
+  power:   { label: 'P', name: 'POWER',   color: '#ffee33', weight: 25, description: 'Strengthens the main gun up to level 5.' },
+  spread:  { label: 'S', name: 'SPREAD',  color: '#33ff66', weight: 18, description: 'Adds angled shots. Stacks twice.' },
+  rapid:   { label: 'R', name: 'RAPID',   color: '#ff9933', weight: 14, description: 'Fires faster for 10 seconds.' },
+  rockets: { label: 'X', name: 'ROCKETS', color: '#ff6633', weight: 10, description: 'Explosive secondary shots damage nearby foes.' },
+  homing:  { label: 'H', name: 'HOMING',  color: '#ccccff', weight: 10, description: 'Secondary missiles steer toward targets.' },
+  drone:   { label: 'D', name: 'DRONE',   color: '#33ffff', weight: 8, description: 'Adds a gun drone that blocks enemy bullets. Max 2.' },
+  laser:   { label: 'L', name: 'LASER',   color: '#ff3366', weight: 8, description: 'A continuous, piercing beam while firing.' },
+  chain:   { label: 'Z', name: 'CHAIN',   color: '#aaffff', weight: 8, description: 'A bolt jumps from its first hit to nearby foes.' },
+  shield:  { label: 'O', name: 'SHIELD',  color: '#3399ff', weight: 12, description: 'Adds one hit shield. Ship upgrades raise capacity.' },
+  chrono:  { label: 'Q', name: 'CHRONO CELL', color: '#99ddff', weight: 4, description: 'Enemy bullets move at 30% speed for 3 seconds.' },
+  capacitor: { label: 'K', name: 'GRAZE CAP', color: '#aaffff', weight: 5, description: 'A near miss gives 25 points and 1 ULT at max gun power.' },
+  ship:    { label: 'U', name: 'UPGRADE', color: '#ffffff', weight: 3, description: 'Raises ship speed and shield capacity to MK5; refills shields.' },
+  bomb:    { label: 'B', name: 'BOMB',    color: '#ff3344', weight: 9, description: 'Clears enemy bullets and blasts foes and the boss.' },
+  life:    { label: '+', name: '1UP',     color: '#ff44dd', weight: 2, description: 'Adds one life, up to 6.' },
   // Halloween folklore pickups
-  garlic:  { label: 'G', name: 'GARLIC',  color: '#f5f0d0', weight: 7, theme: 'halloween' },
-  holy:    { label: 'W', name: 'HOLY WATER', color: '#66ccff', weight: 7, theme: 'halloween' },
-  silver:  { label: 'Ag', name: 'SILVER', color: '#e8eef8', weight: 7, theme: 'halloween' },
-  cross:   { label: 'C', name: 'CROSS',   color: '#ffdd66', weight: 6, theme: 'halloween' },
-  treat:   { label: 'T', name: 'TREAT',   color: '#ff99cc', weight: 8, theme: 'halloween' },
+  garlic:  { label: 'G', name: 'GARLIC',  color: '#f5f0d0', weight: 7, theme: 'halloween', description: 'Repels bats and vampires for 10 seconds.' },
+  holy:    { label: 'W', name: 'HOLY WATER', color: '#66ccff', weight: 7, theme: 'halloween', description: 'Shots hurt undead and witches more for 10 seconds.' },
+  silver:  { label: 'Ag', name: 'SILVER', color: '#e8eef8', weight: 7, theme: 'halloween', description: 'Shots wound the werewolf for 10 seconds.' },
+  cross:   { label: 'C', name: 'CROSS',   color: '#ffdd66', weight: 6, theme: 'halloween', description: 'A returning holy cross secondary weapon.' },
+  treat:   { label: 'T', name: 'TREAT',   color: '#ff99cc', weight: 8, theme: 'halloween', description: 'A black cat crossing freezes foes for 5 seconds. Hold up to 3.' },
 };
 
 // Power-ups available in the current theme

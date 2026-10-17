@@ -61,10 +61,66 @@
     waves: [], arcs: [], hitstop: 0, bonusTimer: 0, bonusCount: 0, victory: false, livesBonus: 0, corpses: [],
     cat: null, catTimer: 0, treats: 0, spook: 0,
     runId: 0, runToken: null, worldRank: null,
+    itemGuideOpen: false, itemGuidePage: 0, guideSkipInput: false,
     motion,
   };
   window.G = G; // handy for debugging from the console
   window.debugRender = () => render();
+
+  const guideOpenButton = document.getElementById('item-guide-open');
+  const guide = document.getElementById('item-guide');
+  const guideList = document.getElementById('item-guide-list');
+  const guideCloseButton = document.getElementById('item-guide-close');
+  const guidePrevButton = document.getElementById('item-guide-prev');
+  const guideNextButton = document.getElementById('item-guide-next');
+  const guidePageLabel = document.getElementById('item-guide-page');
+  const GUIDE_PAGE_SIZE = 5;
+
+  function drawGuidePage() {
+    const kinds = activePowerupKinds();
+    const pages = Math.ceil(kinds.length / GUIDE_PAGE_SIZE);
+    G.itemGuidePage = clamp(G.itemGuidePage, 0, pages - 1);
+    const shown = kinds.slice(G.itemGuidePage * GUIDE_PAGE_SIZE, (G.itemGuidePage + 1) * GUIDE_PAGE_SIZE);
+    guideList.innerHTML = shown.map(kind => {
+      const item = POWERUPS[kind];
+      return `<li style="--pickup-color:${item.color}"><span class="item-guide-symbol">${item.label}</span>`
+        + `<div><strong>${item.name}</strong><p>${item.description}</p></div></li>`;
+    }).join('');
+    guideList.scrollTop = 0;
+    guidePageLabel.textContent = `${G.itemGuidePage + 1} / ${pages}`;
+    guidePrevButton.disabled = G.itemGuidePage === 0;
+    guideNextButton.disabled = G.itemGuidePage === pages - 1;
+  }
+
+  function openItemGuide() {
+    if (G.state !== 'title' && !(G.state === 'playing' && G.paused)) return;
+    G.itemGuidePage = 0;
+    G.itemGuideOpen = true;
+    drawGuidePage();
+    guide.hidden = false;
+    guideOpenButton.hidden = true;
+    guideCloseButton.focus();
+  }
+
+  function closeItemGuide(event) {
+    if (!G.itemGuideOpen) return;
+    G.itemGuideOpen = false;
+    G.guideSkipInput = event?.detail === 0; // keyboard activation must not also start or resume
+    guide.hidden = true;
+    guideOpenButton.hidden = false;
+    canvas.focus();
+  }
+
+  guideOpenButton.addEventListener('click', openItemGuide);
+  guideCloseButton.addEventListener('click', closeItemGuide);
+  guidePrevButton.addEventListener('click', () => { G.itemGuidePage--; drawGuidePage(); });
+  guideNextButton.addEventListener('click', () => { G.itemGuidePage++; drawGuidePage(); });
+  // Touching the HTML guide must not also become a game canvas tap or ship drag.
+  for (const element of [guideOpenButton, guide]) {
+    for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
+      element.addEventListener(type, event => event.stopPropagation());
+    }
+  }
 
   // ---------- spawning helpers (also called by entities) ----------
 
@@ -494,6 +550,8 @@
   }
 
   function chainFrom(source, bolt) {
+    const color = Theme.halloween ? '#cc99ff' : '#99ffff';
+    shockwave(source.x, source.y, 18, color, 0.25, 3);
     const visited = new Set([source]);
     let from = source;
     for (let jump = 0; jump < bolt.chainJumps; jump++) {
@@ -501,7 +559,9 @@
         && dist2(from, e) <= bolt.chainRange ** 2)
         .sort((a, b) => dist2(from, a) - dist2(from, b))[0];
       if (!next) break;
-      G.arcs.push({ x1: from.x, y1: from.y, x2: next.x, y2: next.y, life: 0.15 });
+      G.arcs.push({ x1: from.x, y1: from.y, x2: next.x, y2: next.y,
+        life: 0.3, max: 0.3, chain: true });
+      shockwave(next.x, next.y, 18, color, 0.25, 3);
       visited.add(next);
       hitTarget(next, bolt.dmg * 0.8, true);
       from = next;
@@ -850,6 +910,7 @@
 
   function updateTitle() {
     Leaderboard.world.refresh();
+    if (Input.wasPressed('KeyI')) { openItemGuide(); return; }
     const themeTap = !titleShowsTable() && Input.taps().find(t => Math.abs(t.y - THEME_LINE_Y) < 14);
     if (Input.wasPressed('KeyT') || themeTap) {
       Theme.toggle();
@@ -861,6 +922,7 @@
   }
 
   function updatePlaying(dt) {
+    if (G.paused && Input.wasPressed('KeyI')) { openItemGuide(); return; }
     const pauseTap = G.paused ? Input.taps()[0] : tapOn(PAUSE_BTN);
     if (pauseTap) Input.release(pauseTap.id);
     if (Input.wasPressed('KeyP', 'Escape') || pauseTap) G.paused = !G.paused;
@@ -1227,6 +1289,11 @@
   }
 
   function update(dt) {
+    if (G.itemGuideOpen) {
+      if (Input.wasPressed('Escape', 'KeyI')) closeItemGuide();
+      return;
+    }
+    if (G.guideSkipInput) { G.guideSkipInput = false; return; }
     G.t += dt;
     // Brief freeze-frame on big impacts. Returns false so key presses carry over.
     if (G.hitstop > 0) {
@@ -1361,13 +1428,36 @@
       ctx.stroke();
     }
     for (const arc of G.arcs) {
-      ctx.globalAlpha = Math.min(1, arc.life / 0.15);
-      ctx.strokeStyle = Theme.halloween ? '#cc99ff' : '#99ffff';
-      ctx.lineWidth = 3;
+      const fade = Math.min(1, arc.life / (arc.max || 0.15));
       ctx.beginPath();
       ctx.moveTo(arc.x1, arc.y1);
-      ctx.lineTo(arc.x2, arc.y2);
-      ctx.stroke();
+      if (arc.chain) {
+        const dx = arc.x2 - arc.x1;
+        const dy = arc.y2 - arc.y1;
+        const length = Math.hypot(dx, dy) || 1;
+        const steps = Math.max(3, Math.ceil(length / 18));
+        for (let i = 1; i < steps; i++) {
+          const k = i / steps;
+          const offset = (i % 2 ? 5 : -5);
+          ctx.lineTo(arc.x1 + dx * k - dy / length * offset,
+            arc.y1 + dy * k + dx / length * offset);
+        }
+        ctx.lineTo(arc.x2, arc.y2);
+        ctx.globalAlpha = fade * 0.7;
+        ctx.strokeStyle = Theme.halloween ? '#aa66ff' : '#33ccff';
+        ctx.lineWidth = 8;
+        ctx.stroke();
+        ctx.globalAlpha = fade;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      } else {
+        ctx.globalAlpha = fade;
+        ctx.strokeStyle = Theme.halloween ? '#cc99ff' : '#99ffff';
+        ctx.lineWidth = 3;
+        ctx.lineTo(arc.x2, arc.y2);
+        ctx.stroke();
+      }
     }
     ctx.globalAlpha = 1;
     for (const tx of G.texts) {
@@ -1539,7 +1629,7 @@
       text('SPOOKY', W / 2, 90, 40, flicker);
       text('BLASTER', W / 2, 140, 40, '#9944ee');
     } else {
-      text('STAR', W / 2, 90, 40, rainbow(0));
+      text('SPOOKY', W / 2, 90, 40, rainbow(0));
       text('BLASTER', W / 2, 140, 40, rainbow(60));
     }
 
@@ -1646,6 +1736,8 @@
   }
 
   function render() {
+    guideOpenButton.hidden = G.itemGuideOpen || !(G.state === 'title' || (G.state === 'playing' && G.paused));
+    guideOpenButton.className = G.state === 'playing' ? 'item-guide-open item-guide-open-paused' : 'item-guide-open';
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     Backgrounds.draw(ctx, currentScene(), G.t);
@@ -1758,7 +1850,7 @@
   let lastError = null;
   function reportError(err) {
     const msg = String(err && err.message || err);
-    if (!lastError || lastError.msg !== msg) console.error('Star Blaster error:', err);
+    if (!lastError || lastError.msg !== msg) console.error('Spooky Blaster error:', err);
     lastError = { msg, until: G.t + 6 };
   }
 

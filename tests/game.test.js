@@ -41,10 +41,19 @@ async function boot({ phone = false, reduceMotion = false, fetch = () => Promise
   };
   const canvas = () => ({ width: 0, height: 0, getContext: () => blob });
   // The game canvas is 480x640, shown at half size on screen
-  const gameCanvas = { width: 480, height: 640, getContext: () => blob,
+  const gameCanvas = { width: 480, height: 640, getContext: () => blob, focus() {},
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 240, height: 320 }) };
+  const elements = Object.fromEntries([
+    'item-guide-open', 'item-guide', 'item-guide-list', 'item-guide-close',
+    'item-guide-prev', 'item-guide-next', 'item-guide-page',
+  ].map(id => [id, {
+    hidden: true, disabled: false, innerHTML: '', textContent: '', listeners: {},
+    addEventListener(type, fn) { this.listeners[type] = fn; },
+    click() { this.listeners.click?.({ stopPropagation() {}, preventDefault() {} }); },
+    focus() {},
+  }]));
   const sandbox = {
-    document: { getElementById: () => gameCanvas, createElement: canvas },
+    document: { getElementById: id => id === 'game' ? gameCanvas : elements[id], createElement: canvas },
     matchMedia: mediaQuery,
     localStorage: { getItem: k => (k === 'starblaster.theme' ? 'halloween' : null), setItem() {} },
     addEventListener: (type, fn) => (listeners[type] ||= []).push(fn),
@@ -88,7 +97,7 @@ async function boot({ phone = false, reduceMotion = false, fetch = () => Promise
   const Input = vm.runInContext('Input', sandbox);
   // Let pending network promises settle
   const flush = () => new Promise(r => setImmediate(r));
-  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, flush, mediaQuery, context: sandbox,
+  return { ...game, Input, key, finger, tap, run, play, catUnderShip, errors, flush, mediaQuery, context: sandbox, elements,
     classOf: name => vm.runInContext(name, sandbox) };
 }
 
@@ -114,6 +123,70 @@ test('boots to the title screen and starts a game without errors', async () => {
   t.run(2);
   assert.equal(t.G.state, 'playing');
   assert.deepEqual(t.errors, []);
+});
+
+test('item guide opens from the title and covers every current-theme pickup', async () => {
+  const t = await boot();
+  t.run(0.1);
+  const el = t.elements;
+  assert.equal(el['item-guide-open'].hidden, false);
+  el['item-guide-open'].click();
+  assert.equal(el['item-guide'].hidden, false);
+  assert.equal(t.G.state, 'title');
+  const pages = [];
+  do {
+    pages.push(el['item-guide-list'].innerHTML);
+    if (el['item-guide-next'].disabled) break;
+    el['item-guide-next'].click();
+  } while (pages.length < 10);
+  const copy = pages.join(' ');
+  for (const name of ['CHAIN', 'CHRONO CELL', 'GRAZE CAP', 'UPGRADE', 'GARLIC', 'HOLY WATER', 'TREAT']) {
+    assert.ok(copy.includes(name), `${name} has an entry`);
+  }
+  assert.ok(copy.includes('three seconds') || copy.includes('3 seconds'));
+  assert.ok(copy.includes('near miss'));
+  assert.ok(!copy.includes('undefined'), 'every item has an explanation');
+  t.key('keydown', 'Enter');
+  t.run(0.1);
+  assert.equal(t.G.state, 'title', 'opening the guide prevents accidental play');
+  el['item-guide-close'].click();
+  t.run(0.1);
+  assert.equal(el['item-guide'].hidden, true);
+  assert.equal(t.G.state, 'title');
+  t.key('keyup', 'Enter');
+  vm.runInContext('Theme.toggle()', t.context);
+  el['item-guide-open'].click();
+  const classicPages = [];
+  do {
+    classicPages.push(el['item-guide-list'].innerHTML);
+    if (el['item-guide-next'].disabled) break;
+    el['item-guide-next'].click();
+  } while (classicPages.length < 10);
+  assert.ok(classicPages.join(' ').includes('CHRONO CELL'));
+  assert.ok(!classicPages.join(' ').includes('GARLIC'));
+  el['item-guide-close'].click();
+  t.run(0.1);
+  t.key('keydown', 'Enter');
+  t.run(0.1);
+  assert.equal(t.G.state, 'playing');
+});
+
+test('item guide opens while paused and leaves the game paused on close', async () => {
+  const t = await boot();
+  t.play();
+  t.key('keydown', 'KeyP');
+  t.run(0.1);
+  t.key('keyup', 'KeyP');
+  assert.equal(t.G.paused, true);
+  t.elements['item-guide-open'].click();
+  assert.equal(t.elements['item-guide'].hidden, false);
+  const time = t.G.levelTime;
+  t.run(1);
+  assert.equal(t.G.levelTime, time);
+  t.elements['item-guide-close'].click();
+  t.run(0.1);
+  assert.equal(t.G.paused, true);
+  assert.equal(t.elements['item-guide'].hidden, true);
 });
 
 test('a black cat crossing under the ship jams the guns', async () => {
@@ -332,6 +405,24 @@ test('necromancer waits for real corpses instead of summoning fallback grunts', 
   assert.equal(nec.maxHp, 50);
   assert.equal(nec.mode, 'cast');
   assert.equal(t.G.enemies.length, 1);
+});
+
+test('necromancer ignores shots while entering, then takes damage after settling', async () => {
+  const t = await boot();
+  t.play();
+  const nec = new t.Enemy('necromancer', 240, 100, { stopY: 140 });
+  t.G.enemies.push(nec);
+  t.G.playerBullets.push(new t.Bullet(nec.x, nec.y + 10, 0, -560, true));
+  t.run(0.1);
+  assert.equal(nec.hp, nec.maxHp);
+  assert.equal(nec.intangible, true);
+  nec.y = 139;
+  nec.update(0.02, t.G);
+  assert.equal(nec.mode, 'cast');
+  assert.equal(nec.intangible, false);
+  t.G.playerBullets.push(new t.Bullet(nec.x, nec.y + 10, 0, -560, true));
+  t.run(0.1);
+  assert.ok(nec.hp < nec.maxHp);
 });
 
 test('necromancer claims at most three nearby recent corpses in deterministic order', async () => {
@@ -679,6 +770,22 @@ test('chain lightning fires as a secondary and jumps to nearby enemies once each
   assert.ok(targets[0].hp < 3);
   assert.ok(targets[1].hp < 3);
   assert.equal(targets[3].hp, 3, 'distant enemies are outside the chain');
+  assert.ok(t.G.arcs.some(arc => arc.max >= 0.28), 'a jump leaves a readable arc');
+  assert.ok(t.G.waves.some(w => w.maxR === 18), 'the first impact has a visible pulse');
+});
+
+test('chain bolt shows an impact even when no target is close enough to jump', async () => {
+  const t = await boot();
+  t.play();
+  const target = new t.Enemy('shooter', 150, 200);
+  target.speed = 0;
+  target.fireTimer = 999;
+  t.G.enemies.push(target);
+  t.G.playerBullets.push(new (t.classOf('ChainBolt'))(150, 200, 1));
+  t.run(0.1);
+  assert.ok(target.hp < target.maxHp);
+  assert.equal(t.G.arcs.length, 0);
+  assert.ok(t.G.waves.some(w => w.maxR === 18));
 });
 
 test('chrono pickup slows enemy bullets for three seconds without slowing enemies', async () => {
