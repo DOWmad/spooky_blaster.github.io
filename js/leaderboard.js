@@ -68,6 +68,7 @@ const Leaderboard = (() => {
         method: body ? 'POST' : 'GET',
         headers: body ? { apikey: WORLD_KEY, 'content-type': 'application/json' } : { apikey: WORLD_KEY },
         body: body ? JSON.stringify(body) : undefined,
+        cache: 'no-store', // our own throttle limits load; a cached top 10 would hide a fresh score
         signal: ctrl.signal,
       });
       return res.ok ? await res.json() : null;

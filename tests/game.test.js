@@ -76,7 +76,7 @@ function fakeServer(routes) {
   const calls = [];
   const fetch = async (url, opts = {}) => {
     const action = url.split('/').pop();
-    calls.push({ action, method: opts.method || 'GET', headers: opts.headers || {}, body: opts.body ? JSON.parse(opts.body) : undefined });
+    calls.push({ action, method: opts.method || 'GET', headers: opts.headers || {}, cache: opts.cache, body: opts.body ? JSON.parse(opts.body) : undefined });
     const reply = routes[action];
     if (!reply) return { ok: false, status: 404, json: async () => ({}) };
     const [status, data] = typeof reply === 'function' ? reply(calls[calls.length - 1]) : reply;
@@ -595,4 +595,16 @@ test('a score that only makes the world top 10 still gets initials entry', async
   for (let i = 0; i < 10; i++) vm.runInContext(`Leaderboard.add('TOP', ${1e7 + i}, 9)`, t.context);
   await vm.runInContext('Leaderboard.world', t.context).refresh(true);
   reachInitials(t, 60000); // beats nothing locally, but the world list has only 2 entries
+});
+
+test('world requests bypass the browser cache, so a fresh score shows up straight away', async () => {
+  // The server sends cache-control: max-age=30; without this the refresh right after
+  // submitting returned the stale cached list (seen in the live end-to-end check).
+  const server = fakeServer({ top: [200, WORLD], start: [200, { token: 't' }], submit: [200, { rank: 1 }] });
+  const t = await boot({ fetch: server.fetch });
+  const world = vm.runInContext('Leaderboard.world', t.context);
+  await world.refresh(true);
+  await world.startRun();
+  await world.submit('t', 'ABC', 10, 1);
+  assert.deepEqual([...server.calls.map(c => c.cache)], ['no-store', 'no-store', 'no-store']);
 });
