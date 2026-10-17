@@ -537,10 +537,21 @@ const ENEMY_TYPES = {
   mine:      { sprite: 'mine',      hp: 1,  score: 50,   speed: 50,  r: 9,  drop: 0 },
   phantom:   { sprite: 'phantom',   hp: 4,  score: 400,  speed: 100, r: 14, drop: 0.2 },
   bonus:     { sprite: 'bonus',     hp: 10, score: 3000, speed: 150, r: 18, drop: 0 },
-  necromancer: { sprite: 'necromancer', hp: 10, score: 1000, speed: 70, r: 16, drop: 0.4 },
+  necromancer: { sprite: 'necromancer', hp: 30, score: 1000, speed: 70, r: 16, drop: 0.4 },
 };
 // Types a necromancer can raise from their remains
 const REVIVABLE = new Set(['grunt', 'swooper', 'shooter', 'diver', 'splitter', 'phantom']);
+const NECROMANCER_RITUAL = {
+  channel: 1.6,
+  cooldown: 3.5,
+  stun: 1,
+  maxTargets: 3,
+  maxOwned: 6,
+  corpseAge: 8,
+  range: 300,
+  withdrawAfter: 18,
+  maxSuccesses: 2,
+};
 // Types that can roll as a gold-outlined elite
 const ELITE_TYPES = ['grunt', 'swooper', 'shooter', 'tank', 'diver', 'splitter', 'phantom'];
 
@@ -579,6 +590,14 @@ class Enemy {
     this.burstT = 0;
     this.flash = 0;
     this.dead = false;
+    this.ritualTargets = [];
+    this.ritualTime = 0;
+    this.ritualDamage = 0;
+    this.ritualThreshold = Math.min(30, 20 + 2 * (opts.hpBonus || 0));
+    this.ritualCooldown = 0;
+    this.ritualSuccesses = 0;
+    this.necromancerTime = 0;
+    this.stunTime = 0;
     if (type === 'minelayer' || type === 'bonus') {
       // Side-crossers: enter from one edge and fly to the other
       const from = opts.side || (Math.random() < 0.5 ? -1 : 1);
@@ -752,19 +771,31 @@ class Enemy {
         }
         break;
       case 'necromancer':
-        // Hover near the top and raise the dead every few seconds, then withdraw
         if (this.mode === 'enter') {
           this.y += this.speed * dt;
           if (this.y >= Math.min(this.stopY, 150)) this.setMode('cast');
-        } else if (this.mode === 'cast') {
+          break;
+        }
+        if (this.mode !== 'leave') this.necromancerTime += dt;
+        if (this.mode === 'cast') {
+          if (this.necromancerTime >= NECROMANCER_RITUAL.withdrawAfter
+              || this.ritualSuccesses >= NECROMANCER_RITUAL.maxSuccesses) {
+            this.setMode('leave');
+            break;
+          }
           this.x += this.dir * 40 * dt;
           if (this.x < 40 || this.x > W - 40) this.dir *= -1;
-          this.fireTimer -= dt;
-          if (this.fireTimer <= 0) {
-            this.fireTimer = rand(2.8, 3.6) / this.fireMul;
-            game.raiseDead(this);
+          this.ritualCooldown = Math.max(0, this.ritualCooldown - dt);
+          if (this.ritualCooldown === 0) game.startNecromancerRitual(this);
+        } else if (this.mode === 'ritual') {
+          this.ritualTime -= dt;
+          if (this.ritualTime <= 0) game.completeNecromancerRitual(this);
+        } else if (this.mode === 'stunned') {
+          this.stunTime -= dt;
+          if (this.stunTime <= 0) {
+            this.ritualCooldown = NECROMANCER_RITUAL.cooldown;
+            this.setMode('cast');
           }
-          if (this.modeT > 15) this.setMode('leave');
         } else {
           this.y += this.speed * dt;
         }
@@ -797,6 +828,7 @@ class Enemy {
   }
 
   hit(dmg) {
+    if (this.type === 'necromancer' && this.mode === 'ritual') this.ritualDamage += dmg;
     this.hp -= dmg;
     this.flash = 0.06;
     return this.hp <= 0;
@@ -806,14 +838,54 @@ class Enemy {
     return this.type === 'grunt' && Math.floor(t * 4) % 2 ? 'grunt2' : this.sprite;
   }
 
+  drawRitual(ctx, t) {
+    if (this.mode !== 'ritual' || !this.ritualTargets.length) return;
+    const progress = clamp(1 - this.ritualTime / NECROMANCER_RITUAL.channel, 0, 1);
+    const color = Theme.halloween ? '#66ff66' : '#33ffff';
+    ctx.save();
+    for (const target of this.ritualTargets) {
+      const s = Sprites.get(target.type);
+      ctx.globalAlpha = 0.25 + progress * 0.55;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1 + progress * 2;
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y);
+      ctx.lineTo(target.x, target.y);
+      ctx.stroke();
+      ctx.globalAlpha = 0.2 + Math.sin(t * 10 + target.x) * 0.08 + progress * 0.12;
+      ctx.drawImage(Theme.halloween ? s.revive : s.repair,
+        Math.round(target.x - s.w / 2), Math.round(target.y - s.h / 2));
+    }
+    ctx.globalAlpha = 0.8;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    const remaining = Math.max(0, 1 - this.ritualDamage / this.ritualThreshold);
+    const segments = Math.ceil(5 * remaining);
+    for (let i = 0; i < segments; i++) {
+      const start = -Math.PI / 2 + (i / 5) * Math.PI * 2 + 0.08;
+      const end = -Math.PI / 2 + ((i + 1) / 5) * Math.PI * 2 - 0.08;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.r + 10, start, end);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   draw(ctx, t) {
     const alpha = this.alpha;
     if (alpha <= 0) return;
+    this.drawRitual(ctx, t);
     const s = Sprites.get(this.spriteKey(t));
     const x = Math.round(this.x - s.w / 2);
     const y = Math.round(this.y - s.h / 2);
     ctx.save();
     ctx.globalAlpha = alpha;
+    if (this.mode === 'stunned') {
+      ctx.translate(this.x, this.y);
+      ctx.rotate(Math.sin(t * 30) * 0.12);
+      ctx.translate(-this.x, -this.y);
+      ctx.globalAlpha = alpha * (Math.floor(t * 12) % 2 ? 0.45 : 1);
+    }
     if (this.raised) {
       ctx.fillStyle = `rgba(100, 255, 120, ${0.15 + Math.sin(t * 6) * 0.08})`;
       ctx.beginPath();
